@@ -97,8 +97,12 @@ func BlobsRemove(){}
 func BlobsList(){}
 func BlobsHas(){}
 func BlobsAdd(blob []byte) (string, error){
-
-  return "", nil
+  r := bytes.NewReader(blob)
+  ref, err := theBot.BlobStore.Put(r)
+	if err != nil {
+		return "", err
+	}
+  return ref.Ref(), nil
 }
 
 func BlobsGet(refStr string) ([]byte, error){
