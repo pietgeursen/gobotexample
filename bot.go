@@ -1,18 +1,19 @@
+//go:generate go-mobile-collection $GOFILE
+
 package gobotexample
 
 import (
 	"context"
 	"encoding/base64"
-	"fmt"
 	"os"
 	"time"
+  "bytes"
 
 	"github.com/cryptix/go/logging"
-	"go.cryptoscope.co/margaret"
 
-	"go.cryptoscope.co/ssb"
-	"go.cryptoscope.co/ssb/message"
 	mksbot "go.cryptoscope.co/ssb/sbot"
+	"go.cryptoscope.co/ssb/multilogs"
+	"go.cryptoscope.co/ssb"
 )
 
 var (
@@ -35,12 +36,99 @@ func checkAndLog(err error) {
 	}
 }
 
+// @collection-wrapper
+type Recipients struct {
+ RecipientKey string
+}
+func (*Recipients) Equal(rhs *Recipients) bool{
+	return true
+}
+
+//How much is checked by the stack if a not json string gets passed?
+func Publish(message string, recipientKeys []byte) error {
+  var recps = RecipientsCollection{}
+  recps.UnmarshalJSON(recipientKeys)
+
+	publish, err := multilogs.OpenPublishLog(theBot.RootLog, theBot.UserFeeds, *theBot.KeyPair)
+  _, err = publish.Append(message)
+  return err
+}
+
+func WhoAmI()string{
+  return ""
+}
+func NetworkOn(){}
+func NetworkOff(){}
+func NetworkIsOn() bool {
+  return false
+}
+
+func AdvertisingOn() error {
+  return nil
+}
+func AdvertisingOff() error {
+  return nil
+}
+func AdvertisingIsOn() bool {
+  return false
+}
+func DiscoveryOn() error {
+  return nil
+}
+func DiscoveryOff() error {
+  return nil
+}
+func DiscoveryIsOn() bool {
+  return false
+}
+
+func GossipAdd(multiserveraddress string) error {
+  return nil
+}
+func GossipStop(multiserveraddress string) error {
+  return nil
+}
+func GossipConnect(multiserveraddress string) error {
+  return nil
+}
+
+func BlobsWant(){}
+func BlobsRemove(){}
+func BlobsList(){}
+func BlobsHas(){}
+func BlobsAdd(blob []byte) (string, error){
+
+  return "", nil
+}
+
+func BlobsGet(refStr string) ([]byte, error){
+	ref, err := ssb.ParseBlobRef(refStr)
+	if err != nil {
+		return nil, err
+	}
+
+  r, err := theBot.BlobStore.Get(ref)
+  if err != nil {
+		return nil, err
+	}
+
+  buf := new(bytes.Buffer)
+  _, err = buf.ReadFrom(r)
+
+  if err != nil {
+		return nil, err
+	}
+  var slice = buf.Bytes()
+  return slice, nil
+}
+
 func Stop() error {
 	theBot.Shutdown()
 	return theBot.Close()
 }
 
 func Start(repoPath string) {
+
 	logging.SetupLogging(os.Stderr)
 	log = logging.Logger("sbot")
 
@@ -60,77 +148,9 @@ func Start(repoPath string) {
 	)
 	checkFatal(err)
 
-	/* shutdown handling with ctrl+c, could be a function
-	c := make(chan os.Signal)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		sig := <-c
-		log.Log("event", "killed", "msg", "received signal, shutting down", "signal", sig.String())
-		cancel()
-		sbot.Shutdown()
-		time.Sleep(2 * time.Second)
-
-		err := sbot.Close()
-		checkAndLog(err)
-
-		time.Sleep(2 * time.Second)
-		os.Exit(0)
-	}()
-	logging.SetCloseChan(c)
-	*/
-
 	id := theBot.KeyPair.Id
-	uf := theBot.UserFeeds
-	gb := theBot.GraphBuilder
 
-	feeds, err := uf.List()
 	checkFatal(err)
-
-	var followCnt, msgCount uint
-	for _, author := range feeds {
-		authorRef, err := ssb.ParseFeedRef(string(author))
-		checkFatal(err)
-
-		subLog, err := uf.Get(author)
-		checkFatal(err)
-
-		userLogV, err := subLog.Seq().Value()
-		checkFatal(err)
-		userLogSeq := userLogV.(margaret.Seq)
-		rlSeq, err := subLog.Get(userLogSeq)
-		if margaret.IsErrNulled(err) {
-			continue
-		} else {
-			checkFatal(err)
-		}
-		rv, err := theBot.RootLog.Get(rlSeq.(margaret.BaseSeq))
-		if margaret.IsErrNulled(err) {
-			continue
-		} else {
-			checkFatal(err)
-		}
-		msg := rv.(message.StoredMessage)
-
-		if msg.Sequence.Seq() != userLogSeq.Seq()+1 {
-			err = fmt.Errorf("light fsck failed: head of feed mismatch on %s: %d vs %d", authorRef.Ref(), msg.Sequence, userLogSeq.Seq()+1)
-			log.Log("warning", err)
-			continue
-		}
-
-		msgCount += uint(msg.Sequence.Seq())
-
-		f, err := gb.Follows(authorRef)
-		checkFatal(err)
-
-		if len(feeds) < 20 {
-			h := gb.Hops(authorRef, 2)
-			log.Log("info", "currSeq", "feed", authorRef.Ref(), "seq", msg.Sequence.Seq(), "follows", f.Count(), "hops", h.Count())
-		}
-		followCnt += uint(f.Count())
-	}
-
-	log.Log("event", "repo open", "feeds", len(feeds), "msgs", msgCount, "follows", followCnt)
-
 	log.Log("event", "serving", "ID", id.Ref(), "addr", listenAddr)
 	go func() {
 		for {
@@ -145,4 +165,5 @@ func Start(repoPath string) {
 			}
 		}
 	}()
+
 }

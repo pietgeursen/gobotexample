@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"go.cryptoscope.co/netwrap"
-	"go.cryptoscope.co/secretstream"
+	//"go.cryptoscope.co/netwrap"
+	//"go.cryptoscope.co/secretstream"
 
 	"github.com/cryptix/go/logging"
 	kitlog "github.com/go-kit/kit/log"
@@ -267,57 +267,58 @@ func initSbot(s *Sbot) (*Sbot, error) {
 	ctrl.Register(replicate.NewPlug(s.UserFeeds))
 
 	// local clients (not using network package because we don't want conn limiting or advertising)
-	c, err := net.Dial("unix", r.GetPath("socket"))
-	if err == nil {
-		c.Close()
-		return nil, errors.Errorf("sbot: repo already in use, socket accepted connection")
-	}
-	os.Remove(r.GetPath("socket"))
-
-	uxLis, err := net.Listen("unix", r.GetPath("socket"))
-	if err != nil {
-		return nil, err
-	}
-
-	go func() {
-		for {
-			conn, err := uxLis.Accept()
-			if err != nil {
-				err = errors.Wrap(err, "unix sock accept failed")
-				s.info.Log("warn", err)
-				continue
-			}
-
-			go func() {
-				pkr := muxrpc.NewPacker(conn)
-				ctx, cancel := context.WithCancel(ctx)
-				if cn, ok := pkr.(muxrpc.CloseNotifier); ok {
-					go func() {
-						<-cn.Closed()
-						cancel()
-					}()
-				}
-
-				h, err := ctrl.MakeHandler(conn)
-				if err != nil {
-					err = errors.Wrap(err, "unix sock make handler")
-					s.info.Log("warn", err)
-					cancel()
-					return
-				}
-
-				// spoof remote as us
-				sameAs := netwrap.WrapAddr(conn.RemoteAddr(), secretstream.Addr{PubKey: id.ID})
-				edp := muxrpc.HandleWithRemote(pkr, h, sameAs)
-
-				srv := edp.(muxrpc.Server)
-				if err := srv.Serve(ctx); err != nil {
-					s.info.Log("conn", "serve exited", "err", err, "peer", conn.RemoteAddr())
-				}
-				cancel()
-			}()
-		}
-	}()
+//	c, err := net.Dial("unix", r.GetPath("socket"))
+//	if err == nil {
+//		c.Close()
+//		return nil, errors.Errorf("sbot: repo already in use, socket accepted connection")
+//	}
+//	os.Remove(r.GetPath("socket"))
+//
+//	uxLis, err := net.Listen("unix", r.GetPath("socket"))
+//	if err != nil {
+//    err = errors.Wrap(err, "sbot: unix sock failed to listen")
+//		return nil, err
+//	}
+//
+//	go func() {
+//		for {
+//			conn, err := uxLis.Accept()
+//			if err != nil {
+//				err = errors.Wrap(err, "unix sock accept failed")
+//				s.info.Log("warn", err)
+//				continue
+//			}
+//
+//			go func() {
+//				pkr := muxrpc.NewPacker(conn)
+//				ctx, cancel := context.WithCancel(ctx)
+//				if cn, ok := pkr.(muxrpc.CloseNotifier); ok {
+//					go func() {
+//						<-cn.Closed()
+//						cancel()
+//					}()
+//				}
+//
+//				h, err := ctrl.MakeHandler(conn)
+//				if err != nil {
+//					err = errors.Wrap(err, "unix sock make handler")
+//					s.info.Log("warn", err)
+//					cancel()
+//					return
+//				}
+//
+//				// spoof remote as us
+//				sameAs := netwrap.WrapAddr(conn.RemoteAddr(), secretstream.Addr{PubKey: id.ID})
+//				edp := muxrpc.HandleWithRemote(pkr, h, sameAs)
+//
+//				srv := edp.(muxrpc.Server)
+//				if err := srv.Serve(ctx); err != nil {
+//					s.info.Log("conn", "serve exited", "err", err, "peer", conn.RemoteAddr())
+//				}
+//				cancel()
+//			}()
+//		}
+//	}()
 
 	// tcp+shs
 	opts := network.Options{
