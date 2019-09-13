@@ -20,8 +20,7 @@ github.com/cryptix/go v1.3.1/go.mod h1:mFQotm9rTzptzvNjJM+1vSIDa/rVOVqMu0889GIXg
 github.com/cryptix/go v1.3.2/go.mod h1:mFQotm9rTzptzvNjJM+1vSIDa/rVOVqMu0889GIXg70=
 github.com/cryptix/go v1.4.0 h1:9HUWptRQ9j0v7mquHnAM6inuOkUnG15HZpWD3Dtt32I=
 github.com/cryptix/go v1.4.0/go.mod h1:bopBFzjGB7Oqrsvt7HaPZSOX1gJW7hgIb84XNhnOhOY=
-github.com/cryptix/gobotexample v0.0.0-20190820080304-2ff6ddfd0d3f h1:EvaZrFzZxhgOK600i04ZvN7NWi/LrKvYXQRDDBvHtss=
-github.com/cryptix/gobotexample v0.0.0-20190820080304-2ff6ddfd0d3f/go.mod h1:ug6zfoaFjQftwPWHvgN3jE7tnki2FyOkZRxcaB0tr10=
+github.com/cryptix/go v1.5.0 h1:2+g9oKxiTc5ELGISY2E4Q4E7X8FwP3cXyKbb93EUaZY=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

@@ -3,17 +3,29 @@
 package gobotexample
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"os"
+	"sync"
 	"time"
-  "bytes"
+
+	"github.com/pietgeursen/gobotexample/internal/multiserver"
+	"go.cryptoscope.co/netwrap"
+	"go.cryptoscope.co/secretstream"
+
+	"go.cryptoscope.co/luigi"
+	"go.cryptoscope.co/margaret"
+	"go.cryptoscope.co/ssb/message"
 
 	"github.com/cryptix/go/logging"
+	"github.com/pkg/errors"
 
-	mksbot "go.cryptoscope.co/ssb/sbot"
-	"go.cryptoscope.co/ssb/multilogs"
 	"go.cryptoscope.co/ssb"
+	"go.cryptoscope.co/ssb/multilogs"
+	mksbot "go.cryptoscope.co/ssb/sbot"
 )
 
 var (
@@ -25,105 +37,192 @@ var (
 	appKey  string = "1KHLiKZvAvjbY1ziZEHMXawbCEIM6qwjCDm3VYRan/s="
 	hmacSec string
 
-	theBot *mksbot.Sbot
+	runningLock sync.Mutex
+	theBot      *mksbot.Sbot
 )
 
 func checkAndLog(err error) {
 	if err != nil {
-		if err := logging.LogPanicWithStack(log, "checkAndLog", err); err != nil {
-			panic(err)
-		}
+		panic(err)
 	}
 }
 
+var ErrNotInitialized = errors.New("gobot: not initialized")
+
 // @collection-wrapper
 type Recipients struct {
- RecipientKey string
+	RecipientKey string
 }
-func (*Recipients) Equal(rhs *Recipients) bool{
+
+func (*Recipients) Equal(rhs *Recipients) bool {
 	return true
 }
 
 //How much is checked by the stack if a not json string gets passed?
 func Publish(message string, recipientKeys []byte) error {
-  var recps = RecipientsCollection{}
-  recps.UnmarshalJSON(recipientKeys)
+	var recps = RecipientsCollection{}
+	recps.UnmarshalJSON(recipientKeys)
+
+	var v interface{}
+	err := json.Unmarshal([]byte(message), &v)
+	if err != nil {
+		return errors.Wrap(err, "publish: invalid json input")
+	}
 
 	publish, err := multilogs.OpenPublishLog(theBot.RootLog, theBot.UserFeeds, *theBot.KeyPair)
-  _, err = publish.Append(message)
-  return err
+	_, err = publish.Append(v)
+	return err
 }
 
-func WhoAmI()string{
-  return ""
-}
-func NetworkOn(){}
-func NetworkOff(){}
-func NetworkIsOn() bool {
-  return false
+func CurrentMessageCount() (int64, error) {
+	runningLock.Lock()
+	if theBot == nil {
+		runningLock.Unlock()
+		return -2, ErrNotInitialized
+	}
+	runningLock.Unlock()
+
+	v, err := theBot.RootLog.Seq().Value()
+	if err != nil {
+		return -2, errors.Wrap(err, "query creation failed")
+	}
+
+	seq := v.(margaret.Seq)
+
+	return seq.Seq(), nil
 }
 
-func AdvertisingOn() error {
-  return nil
-}
-func AdvertisingOff() error {
-  return nil
-}
-func AdvertisingIsOn() bool {
-  return false
-}
-func DiscoveryOn() error {
-  return nil
-}
-func DiscoveryOff() error {
-  return nil
-}
-func DiscoveryIsOn() bool {
-  return false
+type MessageWithRootSeq struct {
+	message.KeyValueRaw
+	RootSeq int64 `json:"seqField"`
 }
 
-func GossipAdd(multiserveraddress string) error {
-  return nil
+func PullMessages(last, limit int) ([]byte, error) {
+	runningLock.Lock()
+	if theBot == nil {
+		runningLock.Unlock()
+		return nil, ErrNotInitialized
+	}
+	runningLock.Unlock()
+
+	src, err := theBot.RootLog.Query(
+		margaret.Gte(margaret.BaseSeq(last)),
+		margaret.Limit(limit),
+		margaret.SeqWrap(true))
+	if err != nil {
+		return nil, errors.Wrap(err, "query creation failed")
+	}
+
+	w := &bytes.Buffer{}
+	i := 0
+	fmt.Fprint(w, "[")
+	for {
+		v, err := src.Next(context.Background())
+		if err != nil {
+			if luigi.IsEOS(err) {
+				fmt.Fprint(w, "]")
+				break
+			}
+			return nil, errors.Wrapf(err, "drainLog: failed to drain log msg:%d", i)
+		}
+		if i > 0 {
+			fmt.Fprint(w, ",")
+		}
+
+		sw, ok := v.(margaret.SeqWrapper)
+		if !ok {
+			return nil, errors.Errorf("publish: unexpected message type: %T", v)
+		}
+
+		storedMsg, ok := sw.Value().(message.StoredMessage)
+		if !ok {
+			return nil, errors.Errorf("publish: unexpected message type: %T", v)
+		}
+
+		var msg MessageWithRootSeq
+		msg.RootSeq = sw.Seq().Seq()
+		msg.Key = storedMsg.Key
+		msg.Value = storedMsg.Raw
+
+		if err := json.NewEncoder(w).Encode(msg); err != nil {
+			return nil, errors.Wrapf(err, "drainLog: failed to k:v map message %d", i)
+		}
+
+		i++
+	}
+	return w.Bytes(), nil
 }
-func GossipStop(multiserveraddress string) error {
-  return nil
+
+func WhoAmI() string {
+	return theBot.KeyPair.Id.Ref()
 }
+
 func GossipConnect(multiserveraddress string) error {
-  return nil
+	runningLock.Lock()
+	if theBot == nil {
+		runningLock.Unlock()
+		return ErrNotInitialized
+	}
+	runningLock.Unlock()
+
+	msaddr, err := multiserver.ParseNetAddress([]byte(multiserveraddress))
+	if err != nil {
+		return errors.Wrapf(err, "gossip.connect call: failed to parse input")
+	}
+
+	wrappedAddr := netwrap.WrapAddr(&msaddr.Addr, secretstream.Addr{PubKey: msaddr.Ref.ID})
+	fmt.Println("doing gossip.connect", wrappedAddr.String())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	go func() {
+		time.Sleep(15 * time.Minute)
+		cancel()
+	}()
+	err = theBot.Network.Connect(ctx, wrappedAddr)
+	return errors.Wrapf(err, "gossip.connect call: error connecting to %q", msaddr.Addr)
 }
 
-func BlobsWant(){}
-func BlobsRemove(){}
-func BlobsList(){}
-func BlobsHas(){}
-func BlobsAdd(blob []byte) (string, error){
-  r := bytes.NewReader(blob)
-  ref, err := theBot.BlobStore.Put(r)
+func BlobsWant(blobref string) {
+
+	// br, err := ssb.ParseBlobRef(blobref)
+	// if err!=nil {
+	// 	return
+	// }
+
+	// theBot.WantManger.Want(br)
+
+}
+func BlobsRemove() {}
+func BlobsList()   {}
+func BlobsHas()    {}
+func BlobsAdd(blob []byte) (string, error) {
+	r := bytes.NewReader(blob)
+	ref, err := theBot.BlobStore.Put(r)
 	if err != nil {
 		return "", err
 	}
-  return ref.Ref(), nil
+	return ref.Ref(), nil
 }
 
-func BlobsGet(refStr string) ([]byte, error){
+func BlobsGet(refStr string) ([]byte, error) {
 	ref, err := ssb.ParseBlobRef(refStr)
 	if err != nil {
 		return nil, err
 	}
 
-  r, err := theBot.BlobStore.Get(ref)
-  if err != nil {
+	r, err := theBot.BlobStore.Get(ref)
+	if err != nil {
 		return nil, err
 	}
 
-  buf := new(bytes.Buffer)
-  _, err = buf.ReadFrom(r)
+	buf := new(bytes.Buffer)
+	_, err = buf.ReadFrom(r)
 
-  if err != nil {
+	if err != nil {
 		return nil, err
 	}
-  var slice = buf.Bytes()
-  return slice, nil
+	var slice = buf.Bytes()
+	return slice, nil
 }
 
 func Stop() error {
@@ -169,5 +268,4 @@ func Start(repoPath string) {
 			}
 		}
 	}()
-
 }
