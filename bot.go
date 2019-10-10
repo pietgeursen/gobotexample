@@ -18,13 +18,11 @@ import (
 
 	"go.cryptoscope.co/luigi"
 	"go.cryptoscope.co/margaret"
-	"go.cryptoscope.co/ssb/message"
 
 	"github.com/cryptix/go/logging"
 	"github.com/pkg/errors"
 
 	"go.cryptoscope.co/ssb"
-	"go.cryptoscope.co/ssb/multilogs"
 	mksbot "go.cryptoscope.co/ssb/sbot"
 )
 
@@ -69,8 +67,7 @@ func Publish(message string, recipientKeys []byte) error {
 		return errors.Wrap(err, "publish: invalid json input")
 	}
 
-	publish, err := multilogs.OpenPublishLog(theBot.RootLog, theBot.UserFeeds, *theBot.KeyPair)
-	_, err = publish.Append(v)
+	_, err = theBot.PublishLog.Publish(v)
 	return err
 }
 
@@ -93,7 +90,7 @@ func CurrentMessageCount() (int64, error) {
 }
 
 type MessageWithRootSeq struct {
-	message.KeyValueRaw
+	ssb.KeyValueRaw
 	RootSeq int64 `json:"seqField"`
 }
 
@@ -134,15 +131,16 @@ func PullMessages(last, limit int) ([]byte, error) {
 			return nil, errors.Errorf("publish: unexpected message type: %T", v)
 		}
 
-		storedMsg, ok := sw.Value().(message.StoredMessage)
+		storedMsg, ok := sw.Value().(ssb.Message)
 		if !ok {
 			return nil, errors.Errorf("publish: unexpected message type: %T", v)
 		}
 
+		msgValue := storedMsg.ValueContent()
 		var msg MessageWithRootSeq
 		msg.RootSeq = sw.Seq().Seq()
-		msg.Key = storedMsg.Key
-		msg.Value = storedMsg.Raw
+		msg.Key_ = storedMsg.Key()
+		msg.Value = *msgValue
 
 		if err := json.NewEncoder(w).Encode(msg); err != nil {
 			return nil, errors.Wrapf(err, "drainLog: failed to k:v map message %d", i)
