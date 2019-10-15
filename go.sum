@@ -205,11 +205,15 @@ go.cryptoscope.co/margaret v0.0.12-0.20190816140452-29a74a081cbf/go.mod h1:Fbjg4
 go.cryptoscope.co/margaret v0.0.12-0.20190912103626-34323ad497f4/go.mod h1:3rt+RmZTFZEgfvFxz0ZPDBIWtLJOouWtzV6YbBl6sek=
 go.cryptoscope.co/margaret v0.0.12-0.20191005123912-12e4063e76dd h1:ZrHoEdDRN2zTRsJvOEogcGwsrN8dS3RW0LmJ+wvwBWk=
 go.cryptoscope.co/margaret v0.0.12-0.20191005123912-12e4063e76dd/go.mod h1:tL7wYSzxnOxe6EV21KUE8ve9nveEpArnfg1dQ6vedIY=
+go.cryptoscope.co/margaret v0.0.12-0.20191015084618-03ad79a9a24a h1:kZ/aWBBgcdYiHGl07VCqXRidRjsrrVSQWF8AI6nAQII=
+go.cryptoscope.co/margaret v0.0.12-0.20191015084618-03ad79a9a24a/go.mod h1:tL7wYSzxnOxe6EV21KUE8ve9nveEpArnfg1dQ6vedIY=
 go.cryptoscope.co/muxrpc v1.4.1-0.20190619172113-6a057025468a h1:WW3mDRz4gtHzKcKtkLq762bq7tR/cMXwNQjOzzqgk3M=
 go.cryptoscope.co/muxrpc v1.4.1-0.20190619172113-6a057025468a/go.mod h1:Cx68bmI2mpgZdKDDOxhb+0N09gyo/Aro34Sb+H68ahY=
 go.cryptoscope.co/muxrpc v1.4.1-0.20190910185819-a3119150878e/go.mod h1:dV/i300s3OxZKI0YPlY/hG7w2y9TFgu3oQkNDXBoMQY=
 go.cryptoscope.co/muxrpc v1.5.3-0.20191008092844-324ac7ac5ca6 h1:A65V/QMtdb7ZEy4JZ5yTgJleONqVFHjd6T1CAkYSPD4=
 go.cryptoscope.co/muxrpc v1.5.3-0.20191008092844-324ac7ac5ca6/go.mod h1:kB8EGlRBgr5M8E80CKaTxC2Ga8OCMLUVnw8YNiFSVrw=
+go.cryptoscope.co/muxrpc v1.5.3-0.20191011092035-573ec084427a h1:m5ZtrJQfhTkASnWcQE8a5Fm5z5Xc0gZhnWNYLRdviUo=
+go.cryptoscope.co/muxrpc v1.5.3-0.20191011092035-573ec084427a/go.mod h1:kB8EGlRBgr5M8E80CKaTxC2Ga8OCMLUVnw8YNiFSVrw=
 go.cryptoscope.co/netwrap v0.0.0-20180427130219-dae5b5bc35c3/go.mod h1:arPOz1SB/sunS41F1iBgMgkx4fRhKkG221uUMjzkAqc=
 go.cryptoscope.co/netwrap v0.0.3 h1:HfquGSUYuvBofbCM76Y1QHbwkowbpkmnMQhvp/BkPGQ=
 go.cryptoscope.co/netwrap v0.0.3/go.mod h1:arPOz1SB/sunS41F1iBgMgkx4fRhKkG221uUMjzkAqc=
@@ -225,6 +229,8 @@ go.cryptoscope.co/ssb v0.0.0-20190721175720-7a222662293f/go.mod h1:BmZ6Onm1Pxvh2
 go.cryptoscope.co/ssb v0.0.0-20190912121701-f368dd6b09da/go.mod h1:gpgPuN7P0HxY5prZunnKbl278nlMCqUekGsJaaiwxnk=
 go.cryptoscope.co/ssb v0.0.0-20191010154455-4fb6722f7de3 h1:Fik7JxJLX2F6Ys4CdXVtNWBOmcfpOAftJ6WNZKZHH+w=
 go.cryptoscope.co/ssb v0.0.0-20191010154455-4fb6722f7de3/go.mod h1:lvUoVKO4RiKSLmQXetrjwta1Yj9VQbgxEq19gR8FQPM=
+go.cryptoscope.co/ssb v0.0.0-20191015090058-908143fdc445 h1:Hbs6e3PDUSFyOn5OV7/it3JrZRJ/5XmXniQlJ8Hvxr4=
+go.cryptoscope.co/ssb v0.0.0-20191015090058-908143fdc445/go.mod h1:C1e1Vqd1pAJusV5NLy7/feElLacsYff4mb5NwfHsow8=
 go.mindeco.de/ssb-gabbygrove v0.1.5 h1:4javC43Z/1mC2Ve8+lVrrsOTusWi7iakDGWtPfb/Pt0=
 go.mindeco.de/ssb-gabbygrove v0.1.5/go.mod h1:sBNu1GoyNkLuWcQ2H+pHuBDrXyelbitt5MKHhoWEkAI=
 golang.org/x/crypto v0.0.0-20180222182404-49796115aa4b/go.mod h1:6SG95UA2DQfeDnfUPMdvaQW0Q7yPrPDi9nlGo2tz2b4=
@@ -265,6 +271,7 @@ golang.org/x/sync v0.0.0-20180314180146-1d60e4601c6f/go.mod h1:RxMgew5VJxzue5/jJ
 golang.org/x/sync v0.0.0-20181108010431-42b317875d0f/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
 golang.org/x/sync v0.0.0-20181221193216-37e7f081c4d4/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
 golang.org/x/sync v0.0.0-20190423024810-112230192c58/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+golang.org/x/sync v0.0.0-20190911185100-cd5d95a43a6e h1:vcxGaoTs7kV8m5Np9uUNQin4BrLOthgV7252N8V+FwY=
 golang.org/x/sync v0.0.0-20190911185100-cd5d95a43a6e/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
 golang.org/x/sys v0.0.0-20180406135729-3b87a42e500a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
 golang.org/x/sys v0.0.0-20180905080454-ebe1bf3edb33/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=

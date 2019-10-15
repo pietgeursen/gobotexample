@@ -12,18 +12,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pietgeursen/gobotexample/internal/multiserver"
+	"github.com/cryptix/go/logging"
+	"github.com/pkg/errors"
+	"go.cryptoscope.co/luigi"
+	"go.cryptoscope.co/margaret"
 	"go.cryptoscope.co/netwrap"
 	"go.cryptoscope.co/secretstream"
 
-	"go.cryptoscope.co/luigi"
-	"go.cryptoscope.co/margaret"
-
-	"github.com/cryptix/go/logging"
-	"github.com/pkg/errors"
-
 	"go.cryptoscope.co/ssb"
 	mksbot "go.cryptoscope.co/ssb/sbot"
+
+	"github.com/pietgeursen/gobotexample/internal/multiserver"
 )
 
 var (
@@ -181,15 +180,19 @@ func GossipConnect(multiserveraddress string) error {
 }
 
 func BlobsWant(blobref string) {
+	br, err := ssb.ParseBlobRef(blobref)
+	if err != nil {
+		log.Log("blobsWant", "failed to parse reference", "ref", blobref, "err", err)
+		return
+	}
 
-	// br, err := ssb.ParseBlobRef(blobref)
-	// if err!=nil {
-	// 	return
-	// }
-
-	// theBot.WantManger.Want(br)
-
+	err = theBot.WantManger.Want(br)
+	if err != nil {
+		log.Log("blobsWant", "failed add want to local peer", "ref", blobref, "err", err)
+		return
+	}
 }
+
 func BlobsRemove() {}
 func BlobsList()   {}
 func BlobsHas()    {}
