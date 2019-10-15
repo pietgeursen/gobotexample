@@ -170,7 +170,7 @@ func GossipConnect(multiserveraddress string) error {
 	wrappedAddr := netwrap.WrapAddr(&msaddr.Addr, secretstream.Addr{PubKey: msaddr.Ref.ID})
 	fmt.Println("doing gossip.connect", wrappedAddr.String())
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		time.Sleep(15 * time.Minute)
 		cancel()
