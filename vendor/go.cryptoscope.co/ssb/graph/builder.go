@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package graph
 
 import (
@@ -18,7 +20,6 @@ import (
 	"gonum.org/v1/gonum/graph/simple"
 
 	"go.cryptoscope.co/ssb"
-	"go.cryptoscope.co/ssb/message"
 )
 
 // Builder can build a trust graph and answer other questions
@@ -26,8 +27,8 @@ type Builder interface {
 	librarian.SinkIndex
 
 	Build() (*Graph, error)
-	Follows(*ssb.FeedRef) (FeedSet, error)
-	Hops(*ssb.FeedRef, int) FeedSet
+	Follows(*ssb.FeedRef) (*StrFeedSet, error)
+	Hops(*ssb.FeedRef, int) *StrFeedSet
 	Authorizer(from *ssb.FeedRef, maxHops int) ssb.Authorizer
 }
 
@@ -42,7 +43,7 @@ type builder struct {
 }
 
 // NewBuilder creates a Builder that is backed by a badger database
-func NewBuilder(log kitlog.Logger, db *badger.DB) Builder {
+func NewBuilder(log kitlog.Logger, db *badger.DB) *builder {
 	contactsIdx := libbadger.NewIndex(db, 0)
 
 	b := &builder{
@@ -62,34 +63,31 @@ func NewBuilder(log kitlog.Logger, db *badger.DB) Builder {
 			return nulled
 		}
 
-		msg := val.(message.StoredMessage)
-		var dmsg message.DeserializedMessage
-		err := json.Unmarshal(msg.Raw, &dmsg)
-		if err != nil {
-			err = errors.Wrapf(err, "db/idx contacts: first json unmarshal failed (msg: %s)", msg.Key.Ref())
-			log.Log("msg", "skipped contact message", "reason", err)
-			return nil
+		abs, ok := val.(ssb.Message)
+		if !ok {
+			err := errors.Errorf("graph/idx: invalid msg value %T", val)
+			log.Log("msg", "contact eval failed", "reason", err)
+			return err
 		}
 
 		var c ssb.Contact
-		err = json.Unmarshal(dmsg.Content, &c)
+		err := json.Unmarshal(abs.ContentBytes(), &c)
 		if err != nil {
-			if ssb.IsMessageUnusable(err) {
-				return nil
-			}
-			log.Log("msg", "skipped contact message", "reason", err, "key", msg.Key.Ref())
+			// just ignore invalid messages, nothing to do with them (unless you are debugging something)
+			// err = errors.Wrapf(err, "db/idx contacts: first json unmarshal failed (msg: %v)", abs.Key().Ref())
+			// log.Log("msg", "skipped contact message", "reason", err)
 			return nil
 		}
 
-		addr := append(dmsg.Author.ID, ':')
-		addr = append(addr, c.Contact.ID...)
+		addr := abs.Author().StoredAddr()
+		addr += c.Contact.StoredAddr()
 		switch {
 		case c.Following:
-			err = idx.Set(ctx, librarian.Addr(addr), 1)
+			err = idx.Set(ctx, addr, 1)
 		case c.Blocking:
-			err = idx.Set(ctx, librarian.Addr(addr), 2)
+			err = idx.Set(ctx, addr, 2)
 		default:
-			err = idx.Set(ctx, librarian.Addr(addr), 0)
+			err = idx.Set(ctx, addr, 0)
 			// cryptix: not sure why this doesn't work
 			// it also removes the node if this is the only follow from that peer
 			// 3 state handling seems saner
@@ -134,21 +132,27 @@ func (b *builder) Build() (*Graph, error) {
 		for iter.Rewind(); iter.Valid(); iter.Next() {
 			it := iter.Item()
 			k := it.Key()
-			if len(k) < 65 {
-				// fmt.Printf("skipping: %q\n", string(k))
+			if len(k) != 66 {
 				continue
 			}
 
-			from := ssb.FeedRef{Algo: "ed25519", ID: k[:32]}
-			to := ssb.FeedRef{Algo: "ed25519", ID: k[33:]}
+			rawFrom := k[:33]
+			rawTo := k[33:]
 
-			if bytes.Equal(from.ID, to.ID) {
+			if bytes.Equal(rawFrom, rawTo) {
 				// contact self?!
 				continue
 			}
 
-			var bfrom [32]byte
-			copy(bfrom[:], from.ID)
+			var to, from ssb.StorageRef
+			if err := from.Unmarshal(rawFrom); err != nil {
+				return errors.Wrapf(err, "builder: couldnt idx key value (from)")
+			}
+			if err := to.Unmarshal(rawTo); err != nil {
+				return errors.Wrap(err, "builder: couldnt idx key value (to)")
+			}
+
+			bfrom := librarian.Addr(rawFrom)
 			nFrom, has := known[bfrom]
 			if !has {
 				nFrom = &contactNode{dg.NewNode(), &from, ""}
@@ -156,8 +160,7 @@ func (b *builder) Build() (*Graph, error) {
 				known[bfrom] = nFrom
 			}
 
-			var bto [32]byte
-			copy(bto[:], to.ID)
+			bto := librarian.Addr(rawTo)
 			nTo, has := known[bto]
 			if !has {
 				nTo = &contactNode{dg.NewNode(), &to, ""}
@@ -178,12 +181,14 @@ func (b *builder) Build() (*Graph, error) {
 						w = 1
 					case '2':
 						w = math.Inf(1)
+					default:
+						return errors.Errorf("barbage value in graph strore")
 					}
 				}
 				return nil
 			})
 			if err != nil {
-				return errors.Wrap(err, "failed to get value from iter")
+				return errors.Wrap(err, "failed to get value from item")
 			}
 
 			if math.IsInf(w, -1) {
@@ -200,7 +205,7 @@ func (b *builder) Build() (*Graph, error) {
 	})
 
 	g := &Graph{lookup: known}
-	g.WeightedDirectedGraph = *dg
+	g.WeightedDirectedGraph = dg
 	b.cachedGraph = g
 	return g, err
 }
@@ -211,8 +216,7 @@ type Lookup struct {
 }
 
 func (l Lookup) Dist(to *ssb.FeedRef) ([]graph.Node, float64) {
-	var bto [32]byte
-	copy(bto[:], to.ID)
+	bto := to.StoredAddr()
 	nTo, has := l.lookup[bto]
 	if !has {
 		return nil, math.Inf(-1)
@@ -220,26 +224,31 @@ func (l Lookup) Dist(to *ssb.FeedRef) ([]graph.Node, float64) {
 	return l.dijk.To(nTo.ID())
 }
 
-func (b *builder) Follows(fr *ssb.FeedRef) (FeedSet, error) {
-	if fr == nil {
+func (b *builder) Follows(forRef *ssb.FeedRef) (*StrFeedSet, error) {
+	if forRef == nil {
 		panic("nil feed ref")
 	}
-	var fs feedSet
-	fs.set = make(feedMap)
+	fs := NewFeedSet(50)
 	err := b.kv.View(func(txn *badger.Txn) error {
 		iter := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer iter.Close()
 
-		prefix := append(fr.ID, ':')
-		i := 0
+		prefix := []byte(forRef.StoredAddr())
 		for iter.Seek(prefix); iter.ValidForPrefix(prefix); iter.Next() {
 			it := iter.Item()
 			k := it.Key()
 
 			err := it.Value(func(v []byte) error {
 				if len(v) >= 1 && v[0] == '1' {
-					if err := fs.AddB(k[33:]); err != nil {
-						return errors.Wrapf(err, "invalid follow entry(%d) addr for feed:%s", i, fr.Ref())
+					// extract 2nd feed ref out of db key
+					// TODO: use compact StoredAddr
+					var sr ssb.StorageRef
+					err := sr.Unmarshal(k[33:])
+					if err != nil {
+						return errors.Wrapf(err, "follows(%s): invalid ref entry in db for feed", forRef.Ref())
+					}
+					if err := fs.AddStored(&sr); err != nil {
+						return errors.Wrapf(err, "follows(%s): couldn't add parsed ref feed", forRef.Ref())
 					}
 				}
 				return nil
@@ -247,36 +256,33 @@ func (b *builder) Follows(fr *ssb.FeedRef) (FeedSet, error) {
 			if err != nil {
 				return errors.Wrap(err, "failed to get value from iter")
 			}
-
 		}
 		return nil
 	})
-
-	return &fs, err
+	return fs, err
 }
 
 // Hops returns a slice of feed refrences that are in a particulare range of from
 // max == 0: only direct follows of from
 // max == 1: max:0 + follows of friends of from
 // max == 2: max:1 + follows of their friends
-func (b *builder) Hops(from *ssb.FeedRef, max int) FeedSet {
+func (b *builder) Hops(from *ssb.FeedRef, max int) *StrFeedSet {
 	max++
-	var walked feedSet
-	walked.set = make(feedMap)
+	walked := NewFeedSet(1000)
 	err := walked.AddRef(from)
 	if err != nil {
 		b.log.Log("event", "error", "msg", "add failed", "err", err)
 		return nil
 	}
-	err = b.recurseHops(&walked, from, max)
+	err = b.recurseHops(walked, from, max)
 	if err != nil {
 		b.log.Log("event", "error", "msg", "recurse failed", "err", err)
 		return nil
 	}
-	return &walked
+	return walked
 }
 
-func (b *builder) recurseHops(walked *feedSet, from *ssb.FeedRef, depth int) error {
+func (b *builder) recurseHops(walked *StrFeedSet, from *ssb.FeedRef, depth int) error {
 	// b.log.Log("recursing", from.Ref(), "d", depth)
 	if depth == 0 {
 		return nil

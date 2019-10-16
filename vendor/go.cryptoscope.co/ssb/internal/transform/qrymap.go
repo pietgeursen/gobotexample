@@ -1,32 +1,49 @@
+// SPDX-License-Identifier: MIT
+
 package transform
 
 import (
 	"context"
 	"encoding/json"
 
+	"github.com/cryptix/go/encodedTime"
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/luigi"
 	"go.cryptoscope.co/luigi/mfr"
-	"go.cryptoscope.co/ssb/message"
+	"go.cryptoscope.co/margaret"
+
+	"go.cryptoscope.co/ssb"
 )
 
-func NewKeyValueWrapper(src luigi.Source, wrap bool) luigi.Source {
-	return mfr.SourceMap(src, func(ctx context.Context, v interface{}) (interface{}, error) {
-		storedMsg, ok := v.(message.StoredMessage)
+func NewKeyValueWrapper(snk luigi.Sink, wrap bool) luigi.Sink {
+	return mfr.SinkMap(snk, func(ctx context.Context, v interface{}) (interface{}, error) {
+		abs, ok := v.(ssb.Message)
 		if !ok {
-			return nil, errors.Errorf("wrong message type. expected %T - got %T", storedMsg, v)
+			seqWrap, ok := v.(margaret.SeqWrapper)
+			if !ok {
+				return nil, errors.Errorf("kvwrap: also not a seqWrapper - got %T", v)
+			}
+
+			sv := seqWrap.Value()
+			abs, ok = sv.(ssb.Message)
+			if !ok {
+				return nil, errors.Errorf("kvwrap: wrong message type in seqWrapper - got %T", sv)
+			}
 		}
+
 		if !wrap {
-			return storedMsg.Raw, nil
+			return json.RawMessage(abs.ValueContentJSON()), nil
 		}
-		var kv message.KeyValueRaw
-		kv.Key = storedMsg.Key
-		kv.Value = storedMsg.Raw
-		kv.Timestamp = storedMsg.Timestamp.UnixNano() / 1000000
+
+		var kv ssb.KeyValueRaw
+		kv.Key_ = abs.Key()
+		kv.Value = *abs.ValueContent()
+		kv.Timestamp = encodedTime.Millisecs(abs.Received())
 		kvMsg, err := json.Marshal(kv)
 		if err != nil {
-			return nil, errors.Wrapf(err, "rootLog: failed to k:v map message")
+			return nil, errors.Wrapf(err, "kvwrap: failed to k:v map message")
 		}
-		return kvMsg, nil
+
+		return json.RawMessage(kvMsg), nil
 	})
 }

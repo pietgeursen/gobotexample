@@ -1,27 +1,14 @@
-/*
-This file is part of secretstream.
-
-secretstream is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-secretstream is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with secretstream.  If not, see <http://www.gnu.org/licenses/>.
-*/
+// SPDX-License-Identifier: MIT
 
 package secretstream
 
 import (
+	"bytes"
 	"encoding/base64"
-	"io"
 	"net"
 	"time"
+
+	"go.cryptoscope.co/secretstream/boxstream"
 
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
@@ -48,35 +35,58 @@ func (a Addr) String() string {
 
 // Conn is a boxstream wrapped net.Conn
 type Conn struct {
-	io.ReadCloser
-	io.WriteCloser
 	conn net.Conn
+
+	boxer   *boxstream.Boxer
+	unboxer *boxstream.Unboxer
+	recvMsg []byte // last message read from unboxer
 
 	// public keys
 	local, remote []byte
 }
 
+// Read implements io.Reader.
+func (conn *Conn) Read(p []byte) (int, error) {
+	if len(conn.recvMsg) == 0 {
+		msg, err := conn.unboxer.ReadMessage()
+		if err != nil {
+			return 0, err
+		}
+		conn.recvMsg = msg
+	}
+	n := copy(p, conn.recvMsg)
+	conn.recvMsg = conn.recvMsg[n:]
+	return n, nil
+}
+
+// Write implements io.Writer.
+func (conn *Conn) Write(p []byte) (int, error) {
+	for buf := bytes.NewBuffer(p); buf.Len() > 0; {
+		if err := conn.boxer.WriteMessage(buf.Next(boxstream.MaxSegmentSize)); err != nil {
+			return 0, err
+		}
+	}
+	return len(p), nil
+}
+
 // Close closes the underlying net.Conn
 func (conn *Conn) Close() error {
-	werr := conn.WriteCloser.Close()
-	rerr := conn.ReadCloser.Close()
+	gerr := conn.boxer.WriteGoodbye()
+	cerr := conn.conn.Close()
 
-	werr = errors.Wrap(werr, "boxstream: error closing boxer")
-	rerr = errors.Wrap(rerr, "boxstream: error closing unboxer")
+	gerr = errors.Wrap(gerr, "boxstream: error writing goodbye")
+	cerr = errors.Wrap(cerr, "boxstream: error closing conn")
 
-	// TODO: just to be double sure the FD is closed if the piping (un)boxes mess this up?
-	// defer conn.conn.Close()
-
-	if werr != nil && rerr != nil {
-		return errors.Wrap(multierror.Append(werr, rerr), "error closing both boxstream boxer and unboxer")
+	if gerr != nil && cerr != nil {
+		return errors.Wrap(multierror.Append(gerr, cerr), "error writing goodbye and closing conn")
 	}
 
-	if werr != nil {
-		return werr
+	if gerr != nil {
+		return gerr
 	}
 
-	if rerr != nil {
-		return rerr
+	if cerr != nil {
+		return cerr
 	}
 
 	return nil

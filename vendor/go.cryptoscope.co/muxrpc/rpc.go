@@ -1,13 +1,18 @@
-package muxrpc // import "go.cryptoscope.co/muxrpc"
+// SPDX-License-Identifier: MIT
+
+package muxrpc
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
+	"os"
+	"strings"
 	"sync"
 
+	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/luigi"
 	"go.cryptoscope.co/muxrpc/codec"
@@ -20,6 +25,8 @@ var (
 
 // rpc implements an Endpoint, but also implements Server
 type rpc struct {
+	logger log.Logger
+
 	remote net.Addr
 
 	// pkr is the Sink and Source of the network connection
@@ -39,29 +46,49 @@ type rpc struct {
 	tLock      sync.Mutex
 }
 
-const bufSize = 5
+// this sets the buffer size of individual request streams
+// if the other side of stream doesn't read it's messages
+// the read loop stops draining and all other replies might deadlock
+// BUG: too big settings can accumulate lot's of memory!
+// think blobs.get, the whole blob might be held in memory before it's drained to the store
+// (which might decide it's too big, at that point it was already received though....)
+const bufSize = 150
 
 // Handle handles the connection of the packer using the specified handler.
 func Handle(pkr Packer, handler Handler) Endpoint {
-	var raddr net.Addr
-
-	if pkr, ok := pkr.(*packer); ok {
-		if ra, ok := pkr.c.(interface{ RemoteAddr() net.Addr }); ok {
-			raddr = ra.RemoteAddr()
-		}
-	}
-
-	return handle(pkr, handler, raddr)
+	return handle(pkr, handler, nil, nil)
 }
 
 // HandleWithRemote also sets the remote address the endpoint is connected to
 // TODO: better passing through packer maybe?!
 func HandleWithRemote(pkr Packer, handler Handler, addr net.Addr) Endpoint {
-	return handle(pkr, handler, addr)
+	return handle(pkr, handler, addr, nil)
 }
 
-func handle(pkr Packer, handler Handler, remote net.Addr) Endpoint {
+// HandleWithLogger same as Handle but let's you overwrite the stderr logger
+func HandleWithLogger(pkr Packer, handler Handler, logger log.Logger) Endpoint {
+	return handle(pkr, handler, nil, logger)
+}
+
+func handle(pkr Packer, handler Handler, remote net.Addr, logger log.Logger) Endpoint {
+	if logger == nil {
+		logger = log.NewLogfmtLogger(os.Stderr)
+		logger = level.NewFilter(logger, level.AllowInfo()) // only log info and above
+		logger = log.With(logger, "ts", log.DefaultTimestampUTC, "unit", "muxrpc")
+	}
+	if remote == nil {
+		if pkr, ok := pkr.(*packer); ok {
+			if ra, ok := pkr.c.(interface{ RemoteAddr() net.Addr }); ok {
+				remote = ra.RemoteAddr()
+			}
+		}
+	}
+	if remote != nil {
+		logger = log.With(logger, "remote", remote.String())
+	}
+
 	r := &rpc{
+		logger: logger,
 		remote: remote,
 		pkr:    pkr,
 		reqs:   make(map[int32]*Request),
@@ -75,6 +102,7 @@ func handle(pkr Packer, handler Handler, remote net.Addr) Endpoint {
 		go func() {
 			<-cn.Closed()
 			cancel()
+			r.Terminate()
 		}()
 	}
 
@@ -85,26 +113,44 @@ func handle(pkr Packer, handler Handler, remote net.Addr) Endpoint {
 	return r
 }
 
+// no args should be handled as empty array not args: null
+func marshalCallArgs(args []interface{}) ([]byte, error) {
+	var argData []byte
+	if len(args) == 0 {
+		argData = []byte("[]")
+	} else {
+		var err error
+		argData, err = json.Marshal(args)
+		if err != nil {
+			return nil, errors.Wrap(err, "error marshaling request arguments")
+		}
+	}
+	return argData, nil
+}
+
 // Async does an aync call on the remote.
 func (r *rpc) Async(ctx context.Context, tipe interface{}, method Method, args ...interface{}) (interface{}, error) {
 	inSrc, inSink := luigi.NewPipe(luigi.WithBuffer(bufSize))
+
+	argData, err := marshalCallArgs(args)
+	if err != nil {
+		return nil, err
+	}
 
 	req := &Request{
 		Type:   "async",
 		Stream: newStream(inSrc, r.pkr, 0, streamCapOnce, streamCapNone),
 		in:     inSink,
 
-		Method: method,
-		Args:   args,
+		Method:  method,
+		RawArgs: argData,
 
 		tipe: tipe,
 	}
 
-	err := r.Do(ctx, req)
-	if err != nil {
+	if err := r.Do(ctx, req); err != nil {
 		return nil, errors.Wrap(err, "error sending request")
 	}
-
 	v, err := req.Stream.Next(ctx)
 	return v, errors.Wrap(err, "error reading response from request source")
 }
@@ -113,19 +159,23 @@ func (r *rpc) Async(ctx context.Context, tipe interface{}, method Method, args .
 func (r *rpc) Source(ctx context.Context, tipe interface{}, method Method, args ...interface{}) (luigi.Source, error) {
 	inSrc, inSink := luigi.NewPipe(luigi.WithBuffer(bufSize))
 
+	argData, err := marshalCallArgs(args)
+	if err != nil {
+		return nil, err
+	}
+
 	req := &Request{
 		Type:   "source",
 		Stream: newStream(inSrc, r.pkr, 0, streamCapMultiple, streamCapNone),
 		in:     inSink,
 
-		Method: method,
-		Args:   args,
+		Method:  method,
+		RawArgs: argData,
 
 		tipe: tipe,
 	}
 
-	err := r.Do(ctx, req)
-	if err != nil {
+	if err := r.Do(ctx, req); err != nil {
 		return nil, errors.Wrap(err, "error sending request")
 	}
 
@@ -136,17 +186,21 @@ func (r *rpc) Source(ctx context.Context, tipe interface{}, method Method, args 
 func (r *rpc) Sink(ctx context.Context, method Method, args ...interface{}) (luigi.Sink, error) {
 	inSrc, inSink := luigi.NewPipe(luigi.WithBuffer(bufSize))
 
+	argData, err := marshalCallArgs(args)
+	if err != nil {
+		return nil, err
+	}
+
 	req := &Request{
 		Type:   "sink",
 		Stream: newStream(inSrc, r.pkr, 0, streamCapNone, streamCapMultiple),
 		in:     inSink,
 
-		Method: method,
-		Args:   args,
+		Method:  method,
+		RawArgs: argData,
 	}
 
-	err := r.Do(ctx, req)
-	if err != nil {
+	if err := r.Do(ctx, req); err != nil {
 		return nil, errors.Wrap(err, "error sending request")
 	}
 
@@ -157,43 +211,58 @@ func (r *rpc) Sink(ctx context.Context, method Method, args ...interface{}) (lui
 func (r *rpc) Duplex(ctx context.Context, tipe interface{}, method Method, args ...interface{}) (luigi.Source, luigi.Sink, error) {
 	inSrc, inSink := luigi.NewPipe(luigi.WithBuffer(bufSize))
 
+	argData, err := marshalCallArgs(args)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	req := &Request{
 		Type:   "duplex",
 		Stream: newStream(inSrc, r.pkr, 0, streamCapMultiple, streamCapMultiple),
 		in:     inSink,
 
-		Method: method,
-		Args:   args,
+		Method:  method,
+		RawArgs: argData,
 
 		tipe: tipe,
 	}
 
-	err := r.Do(ctx, req)
-	if err != nil {
+	if err := r.Do(ctx, req); err != nil {
 		return nil, nil, errors.Wrap(err, "error sending request")
 	}
 
 	return req.Stream, req.Stream, nil
 }
 
+var ErrSessionTerminated = errors.New("muxrpc: session terminated")
+
 // Terminate ends the RPC session
 func (r *rpc) Terminate() error {
 	r.tLock.Lock()
 	defer r.tLock.Unlock()
-	// TODO: needs to cancel open requests
 	r.terminated = true
+	r.rLock.Lock()
+	defer r.rLock.Unlock()
+	if n := len(r.reqs); n > 0 { // close active requests
+		for _, req := range r.reqs {
+			req.CloseWithError(ErrSessionTerminated)
+		}
+	}
 	return r.pkr.Close()
 }
 
 // Do executes a generic call
 func (r *rpc) Do(ctx context.Context, req *Request) error {
+	dbg := level.Debug(r.logger)
+	dbg = log.With(dbg, "call", req.Type, "method", req.Method.String())
+
 	var (
 		pkt codec.Packet
 		err error
 	)
 
-	if req.Args == nil {
-		req.Args = []interface{}{}
+	if req.RawArgs == nil {
+		req.RawArgs = []byte("[]")
 	}
 
 	func() {
@@ -214,10 +283,13 @@ func (r *rpc) Do(ctx context.Context, req *Request) error {
 		req.id = pkt.Req
 	}()
 	if err != nil {
+		dbg.Log("event", "request create failed", "reqID", req.id, "err", err)
 		return err
 	}
 
-	return r.pkr.Pour(ctx, &pkt)
+	err = r.pkr.Pour(ctx, &pkt)
+	dbg.Log("event", "request sent", "reqID", req.id, "err", err)
+	return err
 }
 
 // ParseRequest parses the first packet of a stream and parses the contained request
@@ -266,6 +338,8 @@ func (r *rpc) ParseRequest(pkt *codec.Packet) (*Request, error) {
 	req.Stream = newStream(inSrc, r.pkr, pkt.Req, inStream, outStream)
 	req.in = inSink
 
+	level.Debug(r.logger).Log("event", "got request", "reqID", req.id, "method", req.Method, "type", req.Type)
+
 	return &req, nil
 }
 
@@ -296,7 +370,10 @@ func (r *rpc) fetchRequest(ctx context.Context, pkt *codec.Packet) (*Request, bo
 		// buffer new requests to not mindlessly spawn goroutines
 		// and prioritize exisitng requests to unblock the connection time
 		// maybe use two maps
-		go r.root.HandleCall(ctx, req, r)
+		go func() {
+			r.root.HandleCall(ctx, req, r)
+			level.Debug(r.logger).Log("call", "returned", "method", req.Method, "reqID", req.id)
+		}()
 	}
 
 	return req, !ok, nil
@@ -310,14 +387,11 @@ type Server interface {
 
 // Serve handles the RPC session
 func (r *rpc) Serve(ctx context.Context) (err error) {
-	var shutdown bool
+	level.Debug(r.logger).Log("event", "serving")
 	defer func() {
-		if shutdown {
-			return
-		}
 		cerr := r.pkr.Close()
-		if err != nil {
-			log.Printf("muxrpc: Serve closed.\nHandle Err: %+v\nPacker Close Err: %+v", err, cerr)
+		if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
+			level.Info(r.logger).Log("event", "closed", "handleErr", err, "closeErr", cerr)
 		}
 	}()
 
@@ -356,28 +430,7 @@ func (r *rpc) Serve(ctx context.Context) (err error) {
 			return false
 		}()
 		if doRet {
-			cerr := r.pkr.Close()
-			if cerr != nil {
-				log.Printf("muxrpc: Packer Close Err: %+v", cerr)
-			}
-			r.rLock.Lock()
-			defer r.rLock.Unlock()
-			if n := len(r.reqs); n > 0 {
-				for id, req := range r.reqs {
-					if err == nil {
-						if err := req.Close(); err != nil && !luigi.IsEOS(errors.Cause(err)) {
-							log.Printf("muxrpc: failed to close dangling request(%d) %v: %s", id, req.Method, err)
-						}
-					} else {
-						log.Printf("muxrpc(%v): serve loop returning (%v) - closing open reqs: %d", r.remote, err, n)
-						cerr = err
-					}
-					if err := req.CloseWithError(cerr); err != nil && !luigi.IsEOS(errors.Cause(err)) {
-						log.Printf("muxrpc: failed to close dangling request(%d) %v: %s", id, req.Method, err)
-					}
-				}
-			}
-			shutdown = true
+			r.Terminate()
 			return
 		}
 
@@ -405,14 +458,9 @@ func (r *rpc) Serve(ctx context.Context) (err error) {
 						return errors.Wrap(err, "error parsing error packet")
 					}
 				}
-				go func() {
-					err := r.closeStream(req, streamErr)
-					if err != nil {
-						log.Println(errors.Wrapf(err, "muxrpc: failed to handle pkt of stream %d", pkt.Req))
-					}
-				}()
+				go r.closeStream(req, streamErr)
 			} else {
-				log.Printf("warning: unhandled packet for request %d", pkt.Req)
+				level.Warn(r.logger).Log("event", "unhandled packet", "reqID", pkt.Req)
 			}
 			continue
 		}
@@ -435,17 +483,17 @@ func (r *rpc) Serve(ctx context.Context) (err error) {
 	}
 }
 
-func (r *rpc) closeStream(req *Request, streamErr error) error {
+func (r *rpc) closeStream(req *Request, streamErr error) {
 
 	err := req.CloseWithError(streamErr)
 	if err != nil {
-		log.Printf("closeStream(%d) %v - %v", req.id, req.Method, err)
+		level.Warn(r.logger).Log("event", "close stream failed", "reqID", req.id, "method", req.Method.String(), "err", err)
 	}
 
 	r.rLock.Lock()
 	defer r.rLock.Unlock()
 	delete(r.reqs, req.id)
-	return nil
+	return
 }
 
 func (r *rpc) Remote() net.Addr {

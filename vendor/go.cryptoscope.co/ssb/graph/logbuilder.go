@@ -1,21 +1,23 @@
+// SPDX-License-Identifier: MIT
+
 package graph
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"math"
-	"sync"
-
-	"go.cryptoscope.co/ssb/message"
 
 	kitlog "github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/librarian"
 	"go.cryptoscope.co/luigi"
 	"go.cryptoscope.co/margaret"
-	"go.cryptoscope.co/ssb"
+	"gonum.org/v1/gonum/graph"
 	"gonum.org/v1/gonum/graph/simple"
+	"gonum.org/v1/gonum/graph/traverse"
+
+	"go.cryptoscope.co/ssb"
 )
 
 type logBuilder struct {
@@ -32,10 +34,7 @@ type logBuilder struct {
 
 	logger kitlog.Logger
 
-	log margaret.Log
-
-	cacheLock   sync.Mutex
-	cachedGraph *Graph
+	current *Graph
 }
 
 // NewLogBuilder is a much nicer abstraction than the direct k:v implementation.
@@ -44,20 +43,24 @@ type logBuilder struct {
 func NewLogBuilder(logger kitlog.Logger, contacts margaret.Log) (Builder, error) {
 	lb := logBuilder{
 		logger: logger,
-		log:    contacts,
+		current: &Graph{
+			WeightedDirectedGraph: simple.NewWeightedDirectedGraph(0, math.Inf(1)),
+			lookup:                make(key2node),
+		},
 	}
 
-	fsnk := luigi.FuncSink(func(ctx context.Context, v interface{}, closeErr error) error {
-		if closeErr != nil {
-			return closeErr
+	go func() {
+		src, err := contacts.Query(margaret.Live(true))
+		if err != nil {
+			err = errors.Wrap(err, "failed to make live query for contacts")
+			level.Error(logger).Log("err", err, "event", "query build failed")
+			return
 		}
-		logger.Log("msg", "new contact invalidating graph - debounce?")
-		lb.cacheLock.Lock()
-		lb.cachedGraph = nil
-		lb.cacheLock.Unlock()
-		return nil
-	})
-	contacts.Seq().Register(fsnk)
+		err = luigi.Pump(context.TODO(), luigi.FuncSink(lb.buildGraph), src)
+		if err != nil {
+			level.Error(logger).Log("err", err, "event", "graph build failed")
+		}
+	}()
 
 	return &lb, nil
 }
@@ -72,106 +75,101 @@ func (b *logBuilder) Authorizer(from *ssb.FeedRef, maxHops int) ssb.Authorizer {
 }
 
 func (b *logBuilder) Build() (*Graph, error) {
-	dg := simple.NewWeightedDirectedGraph(0, math.Inf(1))
-	known := make(key2node)
+	b.current.Lock()
+	defer b.current.Unlock()
 
-	b.cacheLock.Lock()
-	defer b.cacheLock.Unlock()
-
-	if b.cachedGraph != nil {
-		return b.cachedGraph, nil
+	if b.current == nil {
+		return nil, errors.Errorf("TODO:wait?!")
 	}
 
-	src, err := b.log.Query()
-	if err != nil {
-		return nil, errors.Wrap(err, "friends: couldn't get idx value")
-	}
-
-	snk := luigi.FuncSink(func(ctx context.Context, v interface{}, err error) error {
-		if err != nil {
-			if luigi.IsEOS(err) {
-				return nil
-			}
-			return err
-		}
-
-		msg := v.(message.StoredMessage)
-
-		var c struct {
-			Author  *ssb.FeedRef
-			Content ssb.Contact
-		}
-		err = json.Unmarshal(msg.Raw, &c)
-		if err != nil {
-			if ssb.IsMessageUnusable(err) {
-				return nil
-			}
-			b.logger.Log("msg", "skipped contact message", "reason", err)
-			return nil
-		}
-
-		if bytes.Equal(c.Author.ID, c.Content.Contact.ID) {
-			// contact self?!
-			return nil
-		}
-
-		var bfrom [32]byte
-		copy(bfrom[:], c.Author.ID)
-		nFrom, has := known[bfrom]
-		if !has {
-			nFrom = &contactNode{dg.NewNode(), c.Author, ""}
-			dg.AddNode(nFrom)
-			known[bfrom] = nFrom
-		}
-
-		var bto [32]byte
-		copy(bto[:], c.Content.Contact.ID)
-		nTo, has := known[bto]
-		if !has {
-			nTo = &contactNode{dg.NewNode(), c.Content.Contact, ""}
-			dg.AddNode(nTo)
-			known[bto] = nTo
-		}
-
-		w := math.Inf(-1)
-		if c.Content.Following {
-			w = 1
-		} else if c.Content.Blocking {
-			w = math.Inf(1)
-		} else {
-			if dg.HasEdgeFromTo(nFrom.ID(), nTo.ID()) {
-				dg.RemoveEdge(nFrom.ID(), nTo.ID())
-			}
-			return nil
-		}
-
-		edg := simple.WeightedEdge{F: nFrom, T: nTo, W: w}
-		dg.SetWeightedEdge(contactEdge{
-			WeightedEdge: edg,
-			isBlock:      c.Content.Blocking,
-		})
-		return nil
-	})
-	err = luigi.Pump(context.TODO(), snk, src)
-	if err != nil {
-		return nil, errors.Wrap(err, "friends: couldn't get idx value")
-	}
-	g := &Graph{
-		WeightedDirectedGraph: *dg,
-		lookup:                known,
-	}
-	b.cachedGraph = g
-	return g, nil
+	return b.current, nil
 }
 
-func (b *logBuilder) Follows(from *ssb.FeedRef) (FeedSet, error) {
+func (b *logBuilder) buildGraph(ctx context.Context, v interface{}, err error) error {
+	if err != nil {
+		if luigi.IsEOS(err) {
+			return nil
+		}
+		return err
+	}
+
+	b.current.Lock()
+	defer b.current.Unlock()
+	dg := b.current.WeightedDirectedGraph
+
+	abs, ok := v.(ssb.Message)
+	if !ok {
+		err := errors.Errorf("graph/idx: invalid msg value %T", v)
+		return err
+	}
+	// fmt.Println("processing", abs.Key())
+	var c ssb.Contact
+	err = json.Unmarshal(abs.ContentBytes(), &c)
+	if err != nil {
+		err = errors.Wrapf(err, "db/idx contacts: first json unmarshal failed (msg: %s)", abs.Key().Ref())
+		return nil
+	}
+
+	author := abs.Author()
+	contact := c.Contact
+
+	if author.Equal(contact) {
+		// contact self?!
+		return nil
+	}
+
+	bfrom := author.StoredAddr()
+	nFrom, has := b.current.lookup[bfrom]
+	if !has {
+
+		sr, err := ssb.NewStorageRef(author)
+		if err != nil {
+			return errors.Wrap(err, "failed to create graph node for author")
+		}
+		nFrom = &contactNode{dg.NewNode(), sr, ""}
+		dg.AddNode(nFrom)
+		b.current.lookup[bfrom] = nFrom
+	}
+
+	bto := contact.StoredAddr()
+	nTo, has := b.current.lookup[bto]
+	if !has {
+		sr, err := ssb.NewStorageRef(contact)
+		if err != nil {
+			return errors.Wrap(err, "failed to create graph node for contact")
+		}
+		nTo = &contactNode{dg.NewNode(), sr, ""}
+		dg.AddNode(nTo)
+		b.current.lookup[bto] = nTo
+	}
+
+	w := math.Inf(-1)
+	if c.Following {
+		w = 1
+	} else if c.Blocking {
+		w = math.Inf(1)
+	} else {
+		if dg.HasEdgeFromTo(nFrom.ID(), nTo.ID()) {
+			dg.RemoveEdge(nFrom.ID(), nTo.ID())
+		}
+		return nil
+	}
+
+	edg := simple.WeightedEdge{F: nFrom, T: nTo, W: w}
+	dg.SetWeightedEdge(contactEdge{
+		WeightedEdge: edg,
+		isBlock:      c.Blocking,
+	})
+
+	return nil
+}
+
+func (b *logBuilder) Follows(from *ssb.FeedRef) (*StrFeedSet, error) {
 	g, err := b.Build()
 	if err != nil {
 		return nil, errors.Wrap(err, "follows: couldn't build graph")
 	}
-
-	var fb [32]byte
-	copy(fb[:], from.ID)
+	fb := from.StoredAddr()
 	nFrom, has := g.lookup[fb]
 	if !has {
 		return nil, ErrNoSuchFrom{from}
@@ -182,11 +180,11 @@ func (b *logBuilder) Follows(from *ssb.FeedRef) (FeedSet, error) {
 	refs := NewFeedSet(nodes.Len())
 
 	for nodes.Next() {
-		cnv := nodes.Node().(contactNode)
+		cnv := nodes.Node().(*contactNode)
 		// warning - ignores edge type!
 		edg := g.Edge(nFrom.ID(), cnv.ID())
 		if edg.(contactEdge).Weight() == 1 {
-			if err := refs.AddRef(cnv.feed); err != nil {
+			if err := refs.AddStored(cnv.feed); err != nil {
 				return nil, err
 			}
 		}
@@ -194,7 +192,49 @@ func (b *logBuilder) Follows(from *ssb.FeedRef) (FeedSet, error) {
 	return refs, nil
 }
 
-func (b *logBuilder) Hops(from *ssb.FeedRef, max int) FeedSet {
-	// it would be terrible to do this without some kind of filtering/caching
-	panic("TODO:unsupported")
+func (b *logBuilder) Hops(from *ssb.FeedRef, max int) *StrFeedSet {
+	g, err := b.Build()
+	if err != nil {
+		panic(err)
+	}
+	b.current.Lock()
+	defer b.current.Unlock()
+	fb := from.StoredAddr()
+	nFrom, has := g.lookup[fb]
+	if !has {
+		fs := NewFeedSet(1)
+		fs.AddRef(from)
+		return fs
+	}
+	// fmt.Println(from.Ref(), max)
+	w := traverse.BreadthFirst{
+		// only traverse friend edges
+		Traverse: func(e graph.Edge) bool {
+			ce := e.(contactEdge)
+			rev := g.Edge(ce.To().ID(), ce.From().ID())
+			if rev == nil {
+				return true
+			}
+			return ce.Weight() == 1 && rev.(contactEdge).Weight() == 1
+		},
+	}
+	fs := NewFeedSet(10)
+	w.Walk(g, nFrom, func(n graph.Node, d int) bool {
+		if d > max+1 {
+			return true
+		}
+
+		// if d >= len(got) {
+		// 	got = append(got, []int64(nil))
+		// }
+		// got[d] = append(got[d], n.ID())
+
+		cn := n.(*contactNode)
+		fs.AddStored(cn.feed)
+		return false
+	})
+
+	// goon.Dump(got)
+	// goon.Dump(final)
+	return fs
 }

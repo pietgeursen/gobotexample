@@ -1,98 +1,78 @@
+// SPDX-License-Identifier: MIT
+
 package graph
 
 import (
 	"sync"
 
 	"github.com/pkg/errors"
+	"go.cryptoscope.co/librarian"
 	"go.cryptoscope.co/ssb"
 )
 
-type FeedSet interface {
-	AddB([]byte) error
-	AddRef(*ssb.FeedRef) error
+type strFeedMap map[librarian.Addr]struct{}
 
-	List() ([]*ssb.FeedRef, error)
-	Has(*ssb.FeedRef) bool
-	Count() int
-}
-
-type feedMap map[[32]byte]struct{}
-
-type feedSet struct {
+type StrFeedSet struct {
 	sync.Mutex
-	set feedMap
+	set strFeedMap
 }
 
-func NewFeedSet(size int) FeedSet {
-	return &feedSet{
-		set: make(feedMap, size),
+func NewFeedSet(size int) *StrFeedSet {
+	return &StrFeedSet{
+		set: make(strFeedMap, size),
 	}
 }
 
-func (fs *feedSet) AddB(b []byte) error {
+func (fs *StrFeedSet) AddStored(r *ssb.StorageRef) error {
 	fs.Lock()
 	defer fs.Unlock()
-	if n := len(b); n != 32 {
-		return ssb.NewFeedRefLenError(n)
-	}
-	k, err := copyKeyBytes(b)
+
+	b, err := r.Marshal()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to marshal stored ref")
 	}
-	fs.set[k] = struct{}{}
+
+	fs.set[librarian.Addr(b)] = struct{}{}
 	return nil
 }
 
-func (fs *feedSet) AddRef(ref *ssb.FeedRef) error {
+func (fs *StrFeedSet) AddRef(ref *ssb.FeedRef) error {
 	fs.Lock()
 	defer fs.Unlock()
-	if n := len(ref.ID); n != 32 {
-		return ssb.NewFeedRefLenError(n)
-	}
-	k, err := copyKeyBytes(ref.ID)
-	if err != nil {
-		return err
-	}
-	fs.set[k] = struct{}{}
+	fs.set[ref.StoredAddr()] = struct{}{}
 	return nil
 }
 
-func copyKeyBytes(b []byte) ([32]byte, error) {
-	var k [32]byte
-	if n := copy(k[:], b); n != 32 {
-		return k, ssb.NewFeedRefLenError(n)
-	}
-	return k, nil
-}
-
-func (fs *feedSet) Count() int {
+func (fs *StrFeedSet) Count() int {
 	fs.Lock()
 	defer fs.Unlock()
 	return len(fs.set)
 }
 
-func (fs *feedSet) List() ([]*ssb.FeedRef, error) {
+func (fs *StrFeedSet) List() ([]*ssb.FeedRef, error) {
 	fs.Lock()
 	defer fs.Unlock()
 	var lst = make([]*ssb.FeedRef, len(fs.set))
 	i := 0
+	var sr ssb.StorageRef
 	for feed := range fs.set {
-		ref, err := ssb.NewFeedRefEd25519(feed)
+		err := sr.Unmarshal([]byte(feed))
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to decode map entry")
+		}
+		lst[i], err = sr.FeedRef()
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to make ref from map entry")
 		}
 		// log.Printf("dbg List(%d) %s", i, ref.Ref())
-		lst[i] = ref
 		i++
 	}
 	return lst, nil
 }
 
-func (fs *feedSet) Has(ref *ssb.FeedRef) bool {
+func (fs *StrFeedSet) Has(ref *ssb.FeedRef) bool {
 	fs.Lock()
 	defer fs.Unlock()
-	var k [32]byte
-	copy(k[:], ref.ID)
-	_, has := fs.set[k]
+	_, has := fs.set[ref.StoredAddr()]
 	return has
 }

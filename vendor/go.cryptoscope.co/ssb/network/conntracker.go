@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package network
 
 import (
@@ -34,7 +36,7 @@ func (ict instrumentedConnTracker) CloseAll() {
 	ict.root.CloseAll()
 }
 
-func (ict instrumentedConnTracker) Active(a net.Addr) bool {
+func (ict instrumentedConnTracker) Active(a net.Addr) (bool, time.Duration) {
 	return ict.root.Active(a)
 }
 
@@ -58,6 +60,7 @@ func (ict instrumentedConnTracker) OnClose(conn net.Conn) time.Duration {
 type connEntry struct {
 	c       net.Conn
 	started time.Time
+	done    chan struct{}
 }
 type connLookupMap map[[32]byte]connEntry
 
@@ -78,6 +81,10 @@ func (ct *connTracker) CloseAll() {
 		if err := c.c.Close(); err != nil {
 			log.Printf("failed to close %x: %v\n", k[:5], err)
 		}
+		// seems nice but we are holding the lock
+		// <-c.done
+		// delete(ct.active, k)
+		// we must _trust_ the connection is hooked up to OnClose to remove it's entry
 	}
 }
 
@@ -90,18 +97,22 @@ func (ct *connTracker) Count() uint {
 func toActive(a net.Addr) [32]byte {
 	var pk [32]byte
 	shs, ok := netwrap.GetAddr(a, "shs-bs").(secretstream.Addr)
-	if ok {
-		copy(pk[:], shs.PubKey)
+	if !ok {
+		panic("not an SHS connection")
 	}
+	copy(pk[:], shs.PubKey)
 	return pk
 }
 
-func (ct *connTracker) Active(a net.Addr) bool {
+func (ct *connTracker) Active(a net.Addr) (bool, time.Duration) {
 	ct.activeLock.Lock()
 	defer ct.activeLock.Unlock()
 	k := toActive(a)
-	_, ok := ct.active[k]
-	return ok
+	l, ok := ct.active[k]
+	if !ok {
+		return false, 0
+	}
+	return true, time.Since(l.started)
 }
 
 func (ct *connTracker) OnAccept(conn net.Conn) bool {
@@ -115,6 +126,7 @@ func (ct *connTracker) OnAccept(conn net.Conn) bool {
 	ct.active[k] = connEntry{
 		c:       conn,
 		started: time.Now(),
+		done:    make(chan struct{}),
 	}
 	return true
 }
@@ -128,6 +140,7 @@ func (ct *connTracker) OnClose(conn net.Conn) time.Duration {
 	if !ok {
 		return 0
 	}
+	close(who.done)
 	delete(ct.active, k)
 	return time.Since(who.started)
 }
@@ -143,16 +156,29 @@ type trackerLastWins struct {
 
 func (ct *trackerLastWins) OnAccept(newConn net.Conn) bool {
 	ct.activeLock.Lock()
-	defer ct.activeLock.Unlock()
 	k := toActive(newConn.RemoteAddr())
 	oldConn, ok := ct.active[k]
+	ct.activeLock.Unlock()
 	if ok {
-		oldConn.c.Close()
-		delete(ct.active, k)
+		err := oldConn.c.Close()
+		if err == nil { // error case means broken pipe, nothig to do but to replace
+			// need to wait until the previous conn closed and was removed from the map
+			// otherwise, it's close can remove the new conn from the map and create ghosts
+			select {
+			case <-oldConn.done:
+				// cleaned up after itself
+			case <-time.After(10 * time.Second):
+				log.Println("[warning] not accepted, would ghost connection:", oldConn.c.RemoteAddr().String(), time.Since(oldConn.started))
+				return false
+			}
+		}
 	}
+	ct.activeLock.Lock()
 	ct.active[k] = connEntry{
 		c:       newConn,
 		started: time.Now(),
+		done:    make(chan struct{}),
 	}
+	ct.activeLock.Unlock()
 	return true
 }

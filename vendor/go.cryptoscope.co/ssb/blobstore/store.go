@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: MIT
+
 package blobstore
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	stderr "errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,7 +21,7 @@ import (
 )
 
 var (
-	ErrNoSuchBlob = errors.New("no such blob")
+	ErrNoSuchBlob = stderr.New("no such blob")
 )
 
 func parseBlobRef(refStr string) (*ssb.BlobRef, error) {

@@ -1,16 +1,64 @@
+// SPDX-License-Identifier: MIT
+
 package ssb
 
 import (
 	"encoding/json"
+	"time"
 
+	"github.com/cryptix/go/encodedTime"
 	"github.com/pkg/errors"
+	"go.cryptoscope.co/margaret"
 )
+
+type Value struct {
+	Previous  *MessageRef           `json:"previous"`
+	Author    FeedRef               `json:"author"`
+	Sequence  margaret.BaseSeq      `json:"sequence"`
+	Timestamp encodedTime.Millisecs `json:"timestamp"`
+	Hash      string                `json:"hash"`
+	Content   json.RawMessage       `json:"content"`
+	Signature string                `json:"signature"`
+}
+
+// Message allows accessing message aspects without known the feed type
+type Message interface {
+	Key() *MessageRef
+	Previous() *MessageRef
+
+	margaret.Seq
+
+	Claimed() time.Time
+	Received() time.Time
+
+	Author() *FeedRef
+	ContentBytes() []byte
+
+	ValueContent() *Value
+	ValueContentJSON() json.RawMessage
+}
 
 type Contact struct {
 	Type      string   `json:"type"`
 	Contact   *FeedRef `json:"contact"`
 	Following bool     `json:"following"`
 	Blocking  bool     `json:"blocking"`
+}
+
+func NewContactFollow(who *FeedRef) *Contact {
+	return &Contact{
+		Type:      "contact",
+		Contact:   who,
+		Following: true,
+	}
+}
+
+func NewContactBlock(who *FeedRef) *Contact {
+	return &Contact{
+		Type:     "contact",
+		Contact:  who,
+		Blocking: true,
+	}
 }
 
 func (c *Contact) UnmarshalJSON(b []byte) error {
@@ -55,9 +103,27 @@ func (c *Contact) UnmarshalJSON(b []byte) error {
 }
 
 type About struct {
-	About             *FeedRef
-	Name, Description string
-	Image             *BlobRef
+	Type        string   `json:"type"`
+	About       *FeedRef `json:"about"`
+	Name        string   `json:"name,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Image       *BlobRef `json:"image,omitempty"`
+}
+
+func NewAboutName(who *FeedRef, name string) *About {
+	return &About{
+		Type:  "about",
+		About: who,
+		Name:  name,
+	}
+}
+
+func NewAboutImage(who *FeedRef, img *BlobRef) *About {
+	return &About{
+		Type:  "about",
+		About: who,
+		Image: img,
+	}
 }
 
 func (a *About) UnmarshalJSON(b []byte) error {
@@ -121,4 +187,98 @@ func (a *About) UnmarshalJSON(b []byte) error {
 
 	*a = *newA
 	return nil
+}
+
+type Typed struct {
+	Value
+	Content struct {
+		Type string `json:"type"`
+	} `json:"content"`
+}
+
+type ValuePost struct {
+	Value
+	Content Post `json:"content"`
+}
+
+type Post struct {
+	Type     string      `json:"type"`
+	Text     string      `json:"text"`
+	Root     *MessageRef `json:"root,omitempty"`
+	Branch   MessageRefs `json:"branch,omitempty"`
+	Mentions []Mention   `json:"mentions,omitempty"`
+}
+
+type Mention struct {
+	Link FeedRef `json:"link"`
+	Name string  `json:"name"`
+}
+
+type ValueVote struct {
+	Value
+	Content Vote `json:"content"`
+}
+
+type Vote struct {
+	Type string `json:"type"`
+	Vote struct {
+		Expression string      `json:"expression"`
+		Link       *MessageRef `json:"link"`
+		Value      int         `json:"value"`
+	} `json:"vote"`
+}
+
+type KeyValueRaw struct {
+	Key_      *MessageRef           `json:"key"`
+	Value     Value                 `json:"value"`
+	Timestamp encodedTime.Millisecs `json:"timestamp"`
+}
+
+type KeyValueAsMap struct {
+	Key       *MessageRef           `json:"key"`
+	Value     Value                 `json:"value"`
+	Timestamp encodedTime.Millisecs `json:"timestamp"`
+}
+
+var _ Message = (*KeyValueRaw)(nil)
+
+func (kvr KeyValueRaw) Seq() int64 {
+	return kvr.Value.Sequence.Seq()
+}
+
+func (kvr KeyValueRaw) Key() *MessageRef {
+	return kvr.Key_
+}
+
+func (kvr KeyValueRaw) Author() *FeedRef {
+	return &kvr.Value.Author
+}
+
+func (kvr KeyValueRaw) Previous() *MessageRef {
+	return kvr.Value.Previous
+}
+
+func (kvr KeyValueRaw) Claimed() time.Time {
+	return time.Time(kvr.Value.Timestamp)
+}
+
+func (kvr KeyValueRaw) Received() time.Time {
+	return time.Time(kvr.Timestamp)
+}
+
+func (kvr KeyValueRaw) ContentBytes() []byte {
+	return kvr.Value.Content
+}
+
+func (kvr KeyValueRaw) ValueContent() *Value {
+	return &kvr.Value
+}
+
+func (kvr KeyValueRaw) ValueContentJSON() json.RawMessage {
+	jsonB, err := json.Marshal(kvr.ValueContent())
+	if err != nil {
+		panic(err.Error())
+	}
+
+	return jsonB
 }

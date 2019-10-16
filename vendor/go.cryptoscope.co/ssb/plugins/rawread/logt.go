@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package rawread
 
 import (
@@ -51,7 +53,7 @@ func (g logThandler) HandleConnect(ctx context.Context, e muxrpc.Endpoint) {
 }
 
 func (g logThandler) HandleCall(ctx context.Context, req *muxrpc.Request, edp muxrpc.Endpoint) {
-	if len(req.Args) < 1 {
+	if len(req.Args()) < 1 {
 		req.CloseWithError(errors.Errorf("invalid arguments"))
 		return
 	}
@@ -59,7 +61,7 @@ func (g logThandler) HandleCall(ctx context.Context, req *muxrpc.Request, edp mu
 		tipe librarian.Addr
 		qry  message.CreateHistArgs
 	)
-	switch v := req.Args[0].(type) {
+	switch v := req.Args()[0].(type) {
 	case string:
 		tipe = librarian.Addr(v)
 	case map[string]interface{}:
@@ -70,13 +72,13 @@ func (g logThandler) HandleCall(ctx context.Context, req *muxrpc.Request, edp mu
 		}
 		qry = *q
 	default:
-		req.CloseWithError(errors.Errorf("invalid argument type %T", req.Args[0]))
+		req.CloseWithError(errors.Errorf("invalid argument type %T", req.Args()[0]))
 		return
 	}
 
-	if len(req.Args) == 2 {
+	if len(req.Args()) == 2 {
 		spew.Dump(req.Args)
-		mv, ok := req.Args[1].(map[string]interface{})
+		mv, ok := req.Args()[1].(map[string]interface{})
 		if !ok {
 			req.CloseWithError(errors.Errorf("bad request"))
 			return
@@ -109,18 +111,7 @@ func (g logThandler) HandleCall(ctx context.Context, req *muxrpc.Request, edp mu
 		return
 	}
 
-	snk := luigi.FuncSink(func(ctx context.Context, v interface{}, err error) error {
-		if err != nil {
-			return err
-		}
-		msg, ok := v.([]byte)
-		if !ok {
-			return errors.Errorf("b4pour: expected []byte - got %T", v)
-		}
-		return req.Stream.Pour(ctx, message.RawSignedMessage{RawMessage: msg})
-	})
-
-	err = luigi.Pump(ctx, snk, transform.NewKeyValueWrapper(src, qry.Keys))
+	err = luigi.Pump(ctx, transform.NewKeyValueWrapper(req.Stream, qry.Keys), src)
 	if err != nil {
 		req.CloseWithError(errors.Wrap(err, "logT: failed to pump msgs"))
 		return

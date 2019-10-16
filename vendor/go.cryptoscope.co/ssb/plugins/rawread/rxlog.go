@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package rawread
 
 import (
@@ -45,13 +47,13 @@ func (g rxLogHandler) HandleConnect(ctx context.Context, e muxrpc.Endpoint) {
 }
 
 func (g rxLogHandler) HandleCall(ctx context.Context, req *muxrpc.Request, edp muxrpc.Endpoint) {
-	if len(req.Args) < 1 {
+	if len(req.Args()) < 1 {
 		req.CloseWithError(errors.Errorf("invalid arguments"))
 		return
 	}
 	var qry message.CreateHistArgs
 
-	switch v := req.Args[0].(type) {
+	switch v := req.Args()[0].(type) {
 
 	case map[string]interface{}:
 		q, err := message.NewCreateHistArgsFromMap(v)
@@ -61,7 +63,7 @@ func (g rxLogHandler) HandleCall(ctx context.Context, req *muxrpc.Request, edp m
 		}
 		qry = *q
 	default:
-		req.CloseWithError(errors.Errorf("invalid argument type %T", req.Args[0]))
+		req.CloseWithError(errors.Errorf("invalid argument type %T", req.Args()[0]))
 		return
 	}
 
@@ -72,26 +74,20 @@ func (g rxLogHandler) HandleCall(ctx context.Context, req *muxrpc.Request, edp m
 	// // only return message keys
 	// qry.Values = true
 
-	src, err := g.root.Query(margaret.Limit(int(qry.Limit)), margaret.Live(qry.Live), margaret.Reverse(qry.Reverse))
+	src, err := g.root.Query(
+		margaret.Gte(margaret.BaseSeq(qry.Seq)),
+		margaret.Limit(int(qry.Limit)),
+		margaret.Live(qry.Live),
+		margaret.Reverse(qry.Reverse),
+	)
 	if err != nil {
-		req.CloseWithError(errors.Wrap(err, "logT: failed to qry tipe"))
+		req.CloseWithError(errors.Wrap(err, "logStream: failed to qry tipe"))
 		return
 	}
 
-	snk := luigi.FuncSink(func(ctx context.Context, v interface{}, err error) error {
-		if err != nil {
-			return err
-		}
-		msg, ok := v.([]byte)
-		if !ok {
-			return errors.Errorf("b4pour: expected []byte - got %T", v)
-		}
-		return req.Stream.Pour(ctx, message.RawSignedMessage{RawMessage: msg})
-	})
-
-	err = luigi.Pump(ctx, snk, transform.NewKeyValueWrapper(src, qry.Keys))
+	err = luigi.Pump(ctx, transform.NewKeyValueWrapper(req.Stream, qry.Keys), src)
 	if err != nil {
-		req.CloseWithError(errors.Wrap(err, "logT: failed to pump msgs"))
+		req.CloseWithError(errors.Wrap(err, "logStream: failed to pump msgs"))
 		return
 	}
 

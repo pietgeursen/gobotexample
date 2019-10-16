@@ -1,7 +1,10 @@
-package muxrpc // import "go.cryptoscope.co/muxrpc"
+// SPDX-License-Identifier: MIT
+
+package muxrpc
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 
@@ -25,7 +28,7 @@ type Request struct {
 	// Method is the name of the called function
 	Method Method `json:"name"`
 	// Args contains the call arguments
-	Args []interface{} `json:"args"`
+	RawArgs json.RawMessage `json:"args"`
 	// Type is the type of the call, i.e. async, sink, source or duplex
 	Type CallType `json:"type"`
 
@@ -38,6 +41,13 @@ type Request struct {
 	// tipe is a value that has the type of data we expect to receive.
 	// This is needed for unmarshaling JSON.
 	tipe interface{}
+}
+
+// Legacy
+func (req *Request) Args() []interface{} {
+	var v []interface{}
+	json.Unmarshal(req.RawArgs, &v)
+	return v
 }
 
 // Return is a helper that returns on an async call
@@ -65,8 +75,9 @@ func (req *Request) CloseWithError(cerr error) error {
 		return errors.Wrap(inErr, "failed to close request input")
 	}
 
-	// we really need to make sure we close the streams
-	// "you can't" doesn't work here
+	// we really need to make sure we shut down the streams.
+	// "you can't" only applies for high-level abstractions.
+	// this makes sure the resources go away.
 	s := req.Stream.(*stream)
 	err := s.doCloseWithError(cerr)
 	if errors.Cause(err) == os.ErrClosed || isAlreadyClosed(err) {

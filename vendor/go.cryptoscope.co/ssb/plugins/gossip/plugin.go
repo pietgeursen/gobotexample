@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package gossip
 
 import (
@@ -5,7 +7,7 @@ import (
 	"fmt"
 
 	"github.com/cryptix/go/logging"
-	"github.com/go-kit/kit/metrics/prometheus"
+	"github.com/go-kit/kit/metrics"
 	"go.cryptoscope.co/margaret"
 	"go.cryptoscope.co/margaret/multilog"
 	"go.cryptoscope.co/muxrpc"
@@ -34,11 +36,12 @@ func New(
 		GraphBuilder: graphBuilder,
 		Info:         log,
 	}
+
 	for i, o := range opts {
 		switch v := o.(type) {
-		case *prometheus.Gauge:
+		case metrics.Gauge:
 			h.sysGauge = v
-		case *prometheus.Counter:
+		case metrics.Counter:
 			h.sysCtr = v
 		case HopCount:
 			h.hopCount = int(v)
@@ -51,8 +54,17 @@ func New(
 		}
 	}
 	if h.hopCount == 0 {
-		h.hopCount = 2
+		h.hopCount = 1
 	}
+
+	h.feedManager = NewFeedManager(
+		h.RootLog,
+		h.UserFeeds,
+		h.Info,
+		h.sysGauge,
+		h.sysCtr,
+	)
+
 	return &plugin{h}
 }
 
@@ -71,26 +83,36 @@ func NewHist(
 		GraphBuilder: graphBuilder,
 		Info:         log,
 	}
+
 	for i, o := range opts {
 		switch v := o.(type) {
-		case *prometheus.Gauge:
+		case metrics.Gauge:
 			h.sysGauge = v
-		case *prometheus.Counter:
+		case metrics.Counter:
 			h.sysCtr = v
+		case Promisc:
+			h.promisc = bool(v)
 		case HopCount:
 			h.hopCount = int(v)
 		case HMACSecret:
 			h.hmacSec = v
-		case Promisc:
-			h.promisc = bool(v)
 		default:
 			log.Log("warning", "unhandled hist option", "i", i, "type", fmt.Sprintf("%T", o))
 		}
 	}
 
 	if h.hopCount == 0 {
-		h.hopCount = 2
+		h.hopCount = 1
 	}
+
+	h.feedManager = NewFeedManager(
+		h.RootLog,
+		h.UserFeeds,
+		h.Info,
+		h.sysGauge,
+		h.sysCtr,
+	)
+
 	return histPlugin{h}
 }
 

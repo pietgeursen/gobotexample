@@ -1,22 +1,25 @@
+// SPDX-License-Identifier: MIT
+
 package gossip
 
 import (
-	"bytes"
 	"context"
 	"sync"
 	"time"
 
+	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/metrics"
+
 	"github.com/cryptix/go/logging"
-	"github.com/go-kit/kit/metrics/prometheus"
+	"github.com/go-kit/kit/log/level"
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/librarian"
 	"go.cryptoscope.co/margaret"
 	"go.cryptoscope.co/margaret/multilog"
 	"go.cryptoscope.co/muxrpc"
-	"go.cryptoscope.co/netwrap"
-	"go.cryptoscope.co/secretstream"
 	"go.cryptoscope.co/ssb"
 	"go.cryptoscope.co/ssb/graph"
+	"go.cryptoscope.co/ssb/message"
 )
 
 type handler struct {
@@ -33,39 +36,39 @@ type handler struct {
 	activeLock  sync.Mutex
 	activeFetch sync.Map
 
-	sysGauge *prometheus.Gauge
-	sysCtr   *prometheus.Counter
+	sysGauge metrics.Gauge
+	sysCtr   metrics.Counter
+
+	feedManager *FeedManager
 }
 
 func (g *handler) HandleConnect(ctx context.Context, e muxrpc.Endpoint) {
 	remote := e.Remote()
-	remoteAddr, ok := netwrap.GetAddr(remote, "shs-bs").(secretstream.Addr)
-	if !ok {
+	remoteRef, err := ssb.GetFeedRefFromAddr(remote)
+	if err != nil {
 		return
-	}
-	remoteRef := &ssb.FeedRef{
-		Algo: "ed25519",
-		ID:   remoteAddr.PubKey,
 	}
 
-	if bytes.Equal(remoteRef.ID, g.Id.ID) {
+	if remoteRef.Equal(g.Id) {
 		return
 	}
+
+	info := log.With(g.Info, "remote", remoteRef.Ref()[1:5])
 
 	if g.promisc {
-		hasCallee, err := multilog.Has(g.UserFeeds, librarian.Addr(remoteRef.ID))
+		hasCallee, err := multilog.Has(g.UserFeeds, remoteRef.StoredAddr())
 		if err != nil {
-			g.Info.Log("handleConnect", "multilog.Has(callee)", "ref", remoteRef.Ref(), "err", err)
+			info.Log("handleConnect", "multilog.Has(callee)", "err", err)
 			return
 		}
 
 		if !hasCallee {
-			g.Info.Log("handleConnect", "oops - dont have feed of remote peer. requesting...")
+			info.Log("handleConnect", "oops - dont have feed of remote peer. requesting...")
 			if err := g.fetchFeed(ctx, remoteRef, e); err != nil {
-				g.Info.Log("handleConnect", "fetchFeed callee failed", "ref", remoteRef.Ref(), "err", err)
+				info.Log("handleConnect", "fetchFeed callee failed", "err", err)
 				return
 			}
-			g.Info.Log("fetchFeed", "done callee", "ref", remoteRef.Ref())
+			info.Log("fetchFeed", "done callee")
 		}
 	}
 
@@ -79,22 +82,22 @@ func (g *handler) HandleConnect(ctx context.Context, e muxrpc.Endpoint) {
 
 	ufaddrs, err := g.UserFeeds.List()
 	if err != nil {
-		g.Info.Log("handleConnect", "UserFeeds listing failed", "err", err)
+		info.Log("handleConnect", "UserFeeds listing failed", "err", err)
 		return
 	}
 
 	tGraph, err := g.GraphBuilder.Build()
 	if err != nil {
-		g.Info.Log("handleConnect", "fetchFeed follows listing", "err", err)
+		info.Log("handleConnect", "fetchFeed follows listing", "err", err)
 		return
 	}
 
+	// TODO: port Blocked to FeedSet and make set operations
 	var blockedAddr []librarian.Addr
 	blocked := tGraph.BlockedList(g.Id)
 	for _, ref := range ufaddrs {
-		var k [32]byte
-		copy(k[:], []byte(ref))
-		if _, isBlocked := blocked[k]; isBlocked {
+		if _, isBlocked := blocked[ref]; isBlocked {
+			level.Warn(info).Log("msg", "blocked feed still stored")
 			blockedAddr = append(blockedAddr, ref)
 		}
 	}
@@ -105,14 +108,21 @@ func (g *handler) HandleConnect(ctx context.Context, e muxrpc.Endpoint) {
 		if muxrpc.IsSinkClosed(err) || errors.Cause(err) == context.Canceled {
 			return
 		}
+		if err != nil {
+			level.Error(info).Log("fetching", "hops failed", "err", err)
+		}
 	}
 
 	err = g.fetchAllLib(ctx, e, ufaddrs)
 	if muxrpc.IsSinkClosed(err) || errors.Cause(err) == context.Canceled {
 		return
 	}
+	if err != nil {
+		level.Error(info).Log("fetching", "stored failed", "err", err)
+	} else {
+		info.Log("msg", "fetch done", "hops", hops.Count(), "stored", len(ufaddrs))
+	}
 
-	g.Info.Log("msg", "fetchHops done", "hops", hops.Count(), "stored", len(ufaddrs))
 }
 
 func (g *handler) check(err error) {
@@ -133,22 +143,43 @@ func (g *handler) HandleCall(
 	closeIfErr := func(err error) {
 		g.check(err)
 		if err != nil {
-			closeErr := req.Stream.CloseWithError(err)
-			g.check(errors.Wrapf(closeErr, "error closeing request. %s", req.Method))
+			req.Stream.CloseWithError(err)
+		} else {
+			req.Stream.Close()
 		}
 	}
 
 	switch req.Method.String() {
 
 	case "createHistoryStream":
+		//  https://ssbc.github.io/scuttlebutt-protocol-guide/#createHistoryStream
+		args := req.Args()
 		if req.Type != "source" {
-			closeIfErr(errors.Errorf("createHistoryStream: wrong tipe. %s", req.Type))
+			closeIfErr(errors.Errorf("wrong tipe. %s", req.Type))
 			return
 		}
-		if err := g.pourFeed(ctx, req); err != nil {
-			closeIfErr(errors.Wrap(err, "createHistoryStream failed"))
+		if len(args) < 1 {
+			err := errors.New("ssb/message: not enough arguments, expecting feed id")
+			closeIfErr(err)
 			return
 		}
+		argMap, ok := args[0].(map[string]interface{})
+		if !ok {
+			err := errors.Errorf("ssb/message: not the right map - %T", args[0])
+			closeIfErr(err)
+			return
+		}
+		query, err := message.NewCreateHistArgsFromMap(argMap)
+		if err != nil {
+			closeIfErr(errors.Wrap(err, "bad request"))
+			return
+		}
+		err = g.feedManager.CreateStreamHistory(ctx, req.Stream, query)
+		if err != nil {
+			req.Stream.CloseWithError(errors.Wrap(err, "createHistoryStream failed"))
+			return
+		}
+		// don't close stream (feedManager will pass it on to live processing or close it itself)
 
 	case "gossip.ping":
 		err := req.Stream.Pour(ctx, time.Now().UnixNano()/1000000)
