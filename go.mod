@@ -12,3 +12,5 @@ require (
 	go.cryptoscope.co/secretstream v1.2.1
 	go.cryptoscope.co/ssb v0.0.0-20191015090058-908143fdc445
 )
+
+exclude modernc.org/fileutil v1.1.0
