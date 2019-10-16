@@ -16,10 +16,13 @@ import (
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/luigi"
 	"go.cryptoscope.co/margaret"
+	"go.cryptoscope.co/margaret/multilog"
 	"go.cryptoscope.co/netwrap"
 	"go.cryptoscope.co/secretstream"
 
 	"go.cryptoscope.co/ssb"
+	"go.cryptoscope.co/ssb/multilogs"
+	"go.cryptoscope.co/ssb/repo"
 	mksbot "go.cryptoscope.co/ssb/sbot"
 
 	"github.com/pietgeursen/gobotexample/internal/multiserver"
@@ -231,6 +234,11 @@ func Stop() error {
 	return theBot.Close()
 }
 
+// use old badger implementation for now
+func openBadgerUserFeeds(r repo.Interface) (multilog.MultiLog, repo.ServeFunc, error) {
+	return repo.OpenBadgerMultiLog(r, "userFeeds", multilogs.UserFeedsUpdate)
+}
+
 func Start(repoPath string) {
 
 	logging.SetupLogging(os.Stderr)
@@ -249,6 +257,7 @@ func Start(repoPath string) {
 		mksbot.WithListenAddr(listenAddr),
 		mksbot.EnableAdvertismentBroadcasts(true),
 		mksbot.EnableAdvertismentDialing(true),
+		mksbot.LateOption(mksbot.MountMultiLog("userFeeds", openBadgerUserFeeds)),
 	)
 	checkFatal(err)
 
