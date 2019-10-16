@@ -186,7 +186,7 @@ func BlobsWant(blobref string) {
 		return
 	}
 
-	err = theBot.WantManger.Want(br)
+	err = theBot.WantManager.Want(br)
 	if err != nil {
 		log.Log("blobsWant", "failed add want to local peer", "ref", blobref, "err", err)
 		return
