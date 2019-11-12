@@ -229,6 +229,26 @@ func BlobsGet(refStr string) ([]byte, error) {
 	return slice, nil
 }
 
+func Peers() ([]byte, error){
+	w := &bytes.Buffer{}
+  status, err := theBot.Status()
+  if err != nil {
+    return nil, err
+  }
+  var peers = status.Peers
+
+  // Apparently peers can be null and that's painful for converting to json and back
+  // If peers is null then set it to an empty list.
+  if peers == nil {
+    peers = []ssb.PeerStatus{}
+  }
+  if err := json.NewEncoder(w).Encode(peers); err != nil {
+    return nil, err
+  }
+
+	return w.Bytes(), nil
+}
+
 func Stop() error {
 	theBot.Shutdown()
 	return theBot.Close()
