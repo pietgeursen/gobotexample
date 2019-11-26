@@ -277,7 +277,7 @@ func Start(repoPath string) {
 		mksbot.WithListenAddr(listenAddr),
 		mksbot.EnableAdvertismentBroadcasts(true),
 		mksbot.EnableAdvertismentDialing(true),
-		mksbot.LateOption(mksbot.MountMultiLog("userFeeds", openBadgerUserFeeds)),
+		//mksbot.LateOption(mksbot.MountMultiLog("userFeeds", openBadgerUserFeeds)),
 	)
 	checkFatal(err)
 
@@ -285,6 +285,7 @@ func Start(repoPath string) {
 
 	checkFatal(err)
 	log.Log("event", "serving", "ID", id.Ref(), "addr", listenAddr)
+
 	go func() {
 		for {
 			// Note: This is where the serving starts ;)

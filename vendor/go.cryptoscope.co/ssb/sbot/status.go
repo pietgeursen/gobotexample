@@ -86,6 +86,8 @@ func (sbot *Sbot) Status() (*ssb.Status, error) {
 			ms.Addr = *tcpAddr
 		}
 		s.Peers = append(s.Peers, ssb.PeerStatus{
+      Id: es.ID.Ref(),
+      IP: ms.Addr.String(),
 			Addr:  ms.String(),
 			Since: humanize.Time(time.Now().Add(-es.Since)),
 		})
