@@ -226,7 +226,11 @@ func (v *VecDense) CopyVec(a Vector) int {
 		return n
 	}
 	if r, ok := a.(RawVectorer); ok {
-		blas64.Copy(r.RawVector(), v.mat)
+		src := r.RawVector()
+		src.N = n
+		dst := v.mat
+		dst.N = n
+		blas64.Copy(src, dst)
 		return n
 	}
 	for i := 0; i < n; i++ {
@@ -287,18 +291,18 @@ func (v *VecDense) AddScaledVec(a Vector, alpha float64, b Vector) {
 
 	var amat, bmat blas64.Vector
 	fast := true
-	aU, _ := untranspose(a)
-	if rv, ok := aU.(RawVectorer); ok {
-		amat = rv.RawVector()
+	aU, _ := untransposeExtract(a)
+	if rv, ok := aU.(*VecDense); ok {
+		amat = rv.mat
 		if v != a {
 			v.checkOverlap(amat)
 		}
 	} else {
 		fast = false
 	}
-	bU, _ := untranspose(b)
-	if rv, ok := bU.(RawVectorer); ok {
-		bmat = rv.RawVector()
+	bU, _ := untransposeExtract(b)
+	if rv, ok := bU.(*VecDense); ok {
+		bmat = rv.mat
 		if v != b {
 			v.checkOverlap(bmat)
 		}
@@ -351,13 +355,13 @@ func (v *VecDense) AddVec(a, b Vector) {
 
 	v.reuseAs(ar)
 
-	aU, _ := untranspose(a)
-	bU, _ := untranspose(b)
+	aU, _ := untransposeExtract(a)
+	bU, _ := untransposeExtract(b)
 
-	if arv, ok := aU.(RawVectorer); ok {
-		if brv, ok := bU.(RawVectorer); ok {
-			amat := arv.RawVector()
-			bmat := brv.RawVector()
+	if arv, ok := aU.(*VecDense); ok {
+		if brv, ok := bU.(*VecDense); ok {
+			amat := arv.mat
+			bmat := brv.mat
 
 			if v != a {
 				v.checkOverlap(amat)
@@ -394,13 +398,13 @@ func (v *VecDense) SubVec(a, b Vector) {
 
 	v.reuseAs(ar)
 
-	aU, _ := untranspose(a)
-	bU, _ := untranspose(b)
+	aU, _ := untransposeExtract(a)
+	bU, _ := untransposeExtract(b)
 
-	if arv, ok := aU.(RawVectorer); ok {
-		if brv, ok := bU.(RawVectorer); ok {
-			amat := arv.RawVector()
-			bmat := brv.RawVector()
+	if arv, ok := aU.(*VecDense); ok {
+		if brv, ok := bU.(*VecDense); ok {
+			amat := arv.mat
+			bmat := brv.mat
 
 			if v != a {
 				v.checkOverlap(amat)
@@ -438,13 +442,13 @@ func (v *VecDense) MulElemVec(a, b Vector) {
 
 	v.reuseAs(ar)
 
-	aU, _ := untranspose(a)
-	bU, _ := untranspose(b)
+	aU, _ := untransposeExtract(a)
+	bU, _ := untransposeExtract(b)
 
-	if arv, ok := aU.(RawVectorer); ok {
-		if brv, ok := bU.(RawVectorer); ok {
-			amat := arv.RawVector()
-			bmat := brv.RawVector()
+	if arv, ok := aU.(*VecDense); ok {
+		if brv, ok := bU.(*VecDense); ok {
+			amat := arv.mat
+			bmat := brv.mat
 
 			if v != a {
 				v.checkOverlap(amat)
@@ -487,13 +491,13 @@ func (v *VecDense) DivElemVec(a, b Vector) {
 
 	v.reuseAs(ar)
 
-	aU, _ := untranspose(a)
-	bU, _ := untranspose(b)
+	aU, _ := untransposeExtract(a)
+	bU, _ := untransposeExtract(b)
 
-	if arv, ok := aU.(RawVectorer); ok {
-		if brv, ok := bU.(RawVectorer); ok {
-			amat := arv.RawVector()
-			bmat := brv.RawVector()
+	if arv, ok := aU.(*VecDense); ok {
+		if brv, ok := bU.(*VecDense); ok {
+			amat := arv.mat
+			bmat := brv.mat
 
 			if v != a {
 				v.checkOverlap(amat)
@@ -533,12 +537,12 @@ func (v *VecDense) MulVec(a Matrix, b Vector) {
 		panic(ErrShape)
 	}
 
-	aU, trans := untranspose(a)
+	aU, trans := untransposeExtract(a)
 	var bmat blas64.Vector
 	fast := true
-	bU, _ := untranspose(b)
-	if rv, ok := bU.(RawVectorer); ok {
-		bmat = rv.RawVector()
+	bU, _ := untransposeExtract(b)
+	if rv, ok := bU.(*VecDense); ok {
+		bmat = rv.mat
 		if v != b {
 			v.checkOverlap(bmat)
 		}
@@ -567,8 +571,8 @@ func (v *VecDense) MulVec(a Matrix, b Vector) {
 
 		// {1,n} x {n,1}
 		if fast {
-			if rv, ok := aU.(RawVectorer); ok {
-				amat := rv.RawVector()
+			if rv, ok := aU.(*VecDense); ok {
+				amat := rv.mat
 				if v != aU {
 					v.checkOverlap(amat)
 				}
@@ -589,18 +593,18 @@ func (v *VecDense) MulVec(a Matrix, b Vector) {
 		}
 		v.setVec(0, sum)
 		return
-	case RawSymmetricer:
+	case *SymDense:
 		if fast {
-			amat := aU.RawSymmetric()
+			amat := aU.mat
 			// We don't know that a is a *SymDense, so make
 			// a temporary SymDense to check overlap.
 			(&SymDense{mat: amat}).checkOverlap(v.asGeneral())
 			blas64.Symv(1, amat, bmat, 0, v.mat)
 			return
 		}
-	case RawTriangular:
+	case *TriDense:
 		v.CopyVec(b)
-		amat := aU.RawTriangular()
+		amat := aU.mat
 		// We don't know that a is a *TriDense, so make
 		// a temporary TriDense to check overlap.
 		(&TriDense{mat: amat}).checkOverlap(v.asGeneral())
@@ -609,9 +613,9 @@ func (v *VecDense) MulVec(a Matrix, b Vector) {
 			ta = blas.Trans
 		}
 		blas64.Trmv(ta, amat, v.mat)
-	case RawMatrixer:
+	case *Dense:
 		if fast {
-			amat := aU.RawMatrix()
+			amat := aU.mat
 			// We don't know that a is a *Dense, so make
 			// a temporary Dense to check overlap.
 			(&Dense{mat: amat}).checkOverlap(v.asGeneral())

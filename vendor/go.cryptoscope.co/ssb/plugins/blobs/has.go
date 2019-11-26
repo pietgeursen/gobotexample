@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package blobs
 
 import (
@@ -20,22 +22,24 @@ type hasHandler struct {
 func (hasHandler) HandleConnect(context.Context, muxrpc.Endpoint) {}
 
 func (h hasHandler) HandleCall(ctx context.Context, req *muxrpc.Request, edp muxrpc.Endpoint) {
-	h.log.Log("event", "onCall", "handler", "has", "args", fmt.Sprintf("%v", req.Args), "method", req.Method)
 	// TODO: push manifest check into muxrpc
 	if req.Type == "" {
 		req.Type = "async"
 	}
 
-	if len(req.Args) != 1 {
+	if len(req.Args()) != 1 {
+		// TODO: change from generic handlers to typed once (source, sink, async..)
+		// async then would have to return a value or an error and not fall into this trap of not closing a stream
+		req.Stream.CloseWithError(fmt.Errorf("bad request - wrong args"))
 		return
 	}
 
-	switch v := req.Args[0].(type) {
+	switch v := req.Args()[0].(type) {
 	case string:
 
 		ref, err := ssb.ParseBlobRef(v)
-		checkAndLog(h.log, errors.Wrap(err, "error parsing blob reference"))
 		if err != nil {
+			req.Stream.CloseWithError(errors.Wrap(err, "error parsing blob reference"))
 			return
 		}
 

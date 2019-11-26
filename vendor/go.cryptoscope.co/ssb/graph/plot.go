@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package graph
 
 import (
@@ -17,10 +19,14 @@ import (
 )
 
 func (g *Graph) NodeCount() int {
+	g.Mutex.Lock()
+	defer g.Mutex.Unlock()
 	return len(g.lookup)
 }
 
 func (g *Graph) RenderSVG(w io.Writer) error {
+	g.Mutex.Lock()
+	defer g.Mutex.Unlock()
 	dotbytes, err := dot.Marshal(g, "trust", "", "")
 	if err != nil {
 		return errors.Wrap(err, "dot marshal failed")
@@ -60,7 +66,7 @@ func (g *Graph) Attributes() []encoding.Attribute {
 
 type contactNode struct {
 	graph.Node
-	feed *ssb.FeedRef
+	feed *ssb.StorageRef
 	name string
 }
 

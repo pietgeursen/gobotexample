@@ -1,8 +1,9 @@
+// SPDX-License-Identifier: MIT
+
 package control
 
 import (
 	"context"
-	"net"
 	"os"
 
 	"github.com/cryptix/go/logging"
@@ -59,15 +60,15 @@ func (h *handler) HandleCall(ctx context.Context, req *muxrpc.Request, edp muxrp
 	switch req.Method.String() {
 
 	case "ctrl.connect":
-		if len(req.Args) != 1 {
+		if len(req.Args()) != 1 {
 			// TODO: use secretstream
 			h.info.Log("error", "usage", "args", req.Args, "method", req.Method)
 			checkAndClose(errors.New("usage: ctrl.connect host:port:key"))
 			return
 		}
-		destString, ok := req.Args[0].(string)
+		destString, ok := req.Args()[0].(string)
 		if !ok {
-			err := errors.Errorf("ctrl.connect call: expected argument to be string, got %T", req.Args[0])
+			err := errors.Errorf("ctrl.connect call: expected argument to be string, got %T", req.Args()[0])
 			checkAndClose(err)
 			return
 		}
@@ -89,14 +90,9 @@ func (h *handler) connect(ctx context.Context, dest string) error {
 		return errors.Wrapf(err, "gossip.connect call: failed to parse input: %s", dest)
 	}
 
-	addr := &net.TCPAddr{
-		IP:   msaddr.Host,
-		Port: msaddr.Port,
-	}
-
-	wrappedAddr := netwrap.WrapAddr(addr, secretstream.Addr{PubKey: msaddr.Ref.ID})
+	wrappedAddr := netwrap.WrapAddr(&msaddr.Addr, secretstream.Addr{PubKey: msaddr.Ref.PubKey()})
 	h.info.Log("event", "doing gossip.connect", "remote", wrappedAddr.String())
 	// TODO: add context to tracker to cancel connections
 	err = h.node.Connect(context.Background(), wrappedAddr)
-	return errors.Wrapf(err, "gossip.connect call: error connecting to %q", addr)
+	return errors.Wrapf(err, "gossip.connect call: error connecting to %q", msaddr.Addr)
 }

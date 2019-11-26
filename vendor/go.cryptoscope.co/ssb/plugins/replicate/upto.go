@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package replicate
 
 import (
@@ -14,6 +16,7 @@ type replicatePlug struct {
 	h muxrpc.Handler
 }
 
+// TODO: add replicate, block, changes
 func NewPlug(users multilog.MultiLog) ssb.Plugin {
 	plug := &replicatePlug{}
 	plug.h = replicateHandler{
@@ -38,7 +41,6 @@ type replicateHandler struct {
 func (g replicateHandler) HandleConnect(ctx context.Context, e muxrpc.Endpoint) {}
 
 func (g replicateHandler) HandleCall(ctx context.Context, req *muxrpc.Request, edp muxrpc.Endpoint) {
-	// TODO: add replicate, block, changes
 	if len(req.Method) < 2 && req.Method[1] != "upto" {
 		req.CloseWithError(errors.Errorf("invalid method"))
 		return
@@ -46,23 +48,32 @@ func (g replicateHandler) HandleCall(ctx context.Context, req *muxrpc.Request, e
 
 	storedFeeds, err := g.users.List()
 	if err != nil {
-		req.CloseWithError(errors.Wrap(err, "replicate: failed to pump msgs"))
+		req.CloseWithError(errors.Wrap(err, "replicate: did not get user list"))
 		return
 	}
 
-	for _, author := range storedFeeds {
-		subLog, err := g.users.Get(author)
+	for i, author := range storedFeeds {
+		var sr ssb.StorageRef
+		err := sr.Unmarshal([]byte(author))
 		if err != nil {
-			req.CloseWithError(errors.Wrap(err, "replicate: failed to pump msgs"))
+			req.CloseWithError(errors.Wrapf(err, "replicate(%d): invalid storage ref", i))
 			return
 		}
-		authorRef := &ssb.FeedRef{
-			Algo: "ed25519",
-			ID:   []byte(author),
+		authorRef, err := sr.FeedRef()
+		if err != nil {
+			req.CloseWithError(errors.Wrapf(err, "replicate(%d): stored ref not a feed?", i))
+			return
 		}
+
+		subLog, err := g.users.Get(author)
+		if err != nil {
+			req.CloseWithError(errors.Wrapf(err, "replicate(%d): did not load sublog", i))
+			return
+		}
+
 		currSeq, err := subLog.Seq().Value()
 		if err != nil {
-			req.CloseWithError(errors.Wrap(err, "replicate: failed to pump msgs"))
+			req.CloseWithError(errors.Wrapf(err, "replicate(%d): failed to get current seq value", i))
 			return
 		}
 
@@ -70,7 +81,7 @@ func (g replicateHandler) HandleCall(ctx context.Context, req *muxrpc.Request, e
 			ID:       authorRef,
 			Sequence: currSeq.(margaret.Seq).Seq() + 1})
 		if err != nil {
-			req.CloseWithError(errors.Wrap(err, "replicate: failed to pump msgs"))
+			req.CloseWithError(errors.Wrapf(err, "replicate(%d): failed to pump msgs", i))
 			return
 		}
 

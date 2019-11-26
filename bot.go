@@ -12,20 +12,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pietgeursen/gobotexample/internal/multiserver"
+	"github.com/cryptix/go/logging"
+	"github.com/pkg/errors"
+	"go.cryptoscope.co/luigi"
+	"go.cryptoscope.co/margaret"
+	"go.cryptoscope.co/margaret/multilog"
 	"go.cryptoscope.co/netwrap"
 	"go.cryptoscope.co/secretstream"
 
-	"go.cryptoscope.co/luigi"
-	"go.cryptoscope.co/margaret"
-	"go.cryptoscope.co/ssb/message"
-
-	"github.com/cryptix/go/logging"
-	"github.com/pkg/errors"
-
 	"go.cryptoscope.co/ssb"
 	"go.cryptoscope.co/ssb/multilogs"
+	"go.cryptoscope.co/ssb/repo"
 	mksbot "go.cryptoscope.co/ssb/sbot"
+
+	"github.com/pietgeursen/gobotexample/internal/multiserver"
 )
 
 var (
@@ -69,8 +69,7 @@ func Publish(message string, recipientKeys []byte) error {
 		return errors.Wrap(err, "publish: invalid json input")
 	}
 
-	publish, err := multilogs.OpenPublishLog(theBot.RootLog, theBot.UserFeeds, *theBot.KeyPair)
-	_, err = publish.Append(v)
+	_, err = theBot.PublishLog.Publish(v)
 	return err
 }
 
@@ -93,7 +92,7 @@ func CurrentMessageCount() (int64, error) {
 }
 
 type MessageWithRootSeq struct {
-	message.KeyValueRaw
+	ssb.KeyValueRaw
 	RootSeq int64 `json:"seqField"`
 }
 
@@ -134,15 +133,16 @@ func PullMessages(last, limit int) ([]byte, error) {
 			return nil, errors.Errorf("publish: unexpected message type: %T", v)
 		}
 
-		storedMsg, ok := sw.Value().(message.StoredMessage)
+		storedMsg, ok := sw.Value().(ssb.Message)
 		if !ok {
 			return nil, errors.Errorf("publish: unexpected message type: %T", v)
 		}
 
+		msgValue := storedMsg.ValueContent()
 		var msg MessageWithRootSeq
 		msg.RootSeq = sw.Seq().Seq()
-		msg.Key = storedMsg.Key
-		msg.Value = storedMsg.Raw
+		msg.Key_ = storedMsg.Key()
+		msg.Value = *msgValue
 
 		if err := json.NewEncoder(w).Encode(msg); err != nil {
 			return nil, errors.Wrapf(err, "drainLog: failed to k:v map message %d", i)
@@ -173,7 +173,7 @@ func GossipConnect(multiserveraddress string) error {
 	wrappedAddr := netwrap.WrapAddr(&msaddr.Addr, secretstream.Addr{PubKey: msaddr.Ref.ID})
 	fmt.Println("doing gossip.connect", wrappedAddr.String())
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		time.Sleep(15 * time.Minute)
 		cancel()
@@ -183,15 +183,19 @@ func GossipConnect(multiserveraddress string) error {
 }
 
 func BlobsWant(blobref string) {
+	br, err := ssb.ParseBlobRef(blobref)
+	if err != nil {
+		log.Log("blobsWant", "failed to parse reference", "ref", blobref, "err", err)
+		return
+	}
 
-	// br, err := ssb.ParseBlobRef(blobref)
-	// if err!=nil {
-	// 	return
-	// }
-
-	// theBot.WantManger.Want(br)
-
+	err = theBot.WantManager.Want(br)
+	if err != nil {
+		log.Log("blobsWant", "failed add want to local peer", "ref", blobref, "err", err)
+		return
+	}
 }
+
 func BlobsRemove() {}
 func BlobsList()   {}
 func BlobsHas()    {}
@@ -225,9 +229,34 @@ func BlobsGet(refStr string) ([]byte, error) {
 	return slice, nil
 }
 
+func Peers() ([]byte, error){
+	w := &bytes.Buffer{}
+  status, err := theBot.Status()
+  if err != nil {
+    return nil, err
+  }
+  var peers = status.Peers
+
+  // Apparently peers can be null and that's painful for converting to json and back
+  // If peers is null then set it to an empty list.
+  if peers == nil {
+    peers = []ssb.PeerStatus{}
+  }
+  if err := json.NewEncoder(w).Encode(peers); err != nil {
+    return nil, err
+  }
+
+	return w.Bytes(), nil
+}
+
 func Stop() error {
 	theBot.Shutdown()
 	return theBot.Close()
+}
+
+// use old badger implementation for now
+func openBadgerUserFeeds(r repo.Interface) (multilog.MultiLog, repo.ServeFunc, error) {
+	return repo.OpenBadgerMultiLog(r, "userFeeds", multilogs.UserFeedsUpdate)
 }
 
 func Start(repoPath string) {
@@ -248,6 +277,7 @@ func Start(repoPath string) {
 		mksbot.WithListenAddr(listenAddr),
 		mksbot.EnableAdvertismentBroadcasts(true),
 		mksbot.EnableAdvertismentDialing(true),
+		//mksbot.LateOption(mksbot.MountMultiLog("userFeeds", openBadgerUserFeeds)),
 	)
 	checkFatal(err)
 
@@ -255,6 +285,7 @@ func Start(repoPath string) {
 
 	checkFatal(err)
 	log.Log("event", "serving", "ID", id.Ref(), "addr", listenAddr)
+
 	go func() {
 		for {
 			// Note: This is where the serving starts ;)

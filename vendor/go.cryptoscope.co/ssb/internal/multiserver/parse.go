@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // first draft of an (surely) incomlete implemenation of multiserver addresses
 package multiserver
 
@@ -6,6 +8,7 @@ import (
 	"encoding/base64"
 	"net"
 	"strconv"
+	"strings"
 
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/ssb"
@@ -17,9 +20,17 @@ var (
 )
 
 type NetAddress struct {
-	Host net.IP
-	Port int
+	Addr net.TCPAddr
 	Ref  *ssb.FeedRef
+}
+
+func (na NetAddress) String() string {
+	var sb strings.Builder
+	sb.WriteString("net:")
+	sb.WriteString(na.Addr.String())
+	sb.WriteString("~shs:")
+	sb.WriteString(base64.StdEncoding.EncodeToString(na.Ref.PubKey()))
+	return sb.String()
 }
 
 func ParseNetAddress(input []byte) (*NetAddress, error) {
@@ -42,31 +53,33 @@ func ParseNetAddress(input []byte) (*NetAddress, error) {
 			if err != nil {
 				return nil, errors.Wrap(ErrNoNetAddr, "multiserver: no valid Host + Port combination")
 			}
-			na.Host = net.ParseIP(host)
-			if na.Host == nil {
+			na.Addr.IP = net.ParseIP(host)
+			if na.Addr.IP == nil {
 				ipAddr, err := net.ResolveIPAddr("ip", host)
 				if err != nil {
 					return nil, errors.Wrap(ErrNoNetAddr, "multiserver: failed to fallback to resolving addr")
 				}
-				na.Host = ipAddr.IP
+				na.Addr.IP = ipAddr.IP
 			}
 			port, err := strconv.Atoi(portStr)
 			if err != nil {
 				return nil, errors.Wrap(ErrNoNetAddr, "multiserver: badly formatted port")
 			}
-			na.Port = port
+			na.Addr.Port = port
 
-			keyBytes := make([]byte, 35)
-			n, err := base64.StdEncoding.Decode(keyBytes, shsPart)
+			var keyBuf = make([]byte, 35)
+			n, err := base64.StdEncoding.Decode(keyBuf, shsPart)
 			if err != nil {
 				return nil, errors.Wrapf(ErrNoSHSKey, "multiserver: invalid pubkey formatting: %s", err)
 			}
 			if n != 32 {
 				return nil, errors.Wrap(ErrNoSHSKey, "multiserver: pubkey not 32bytes long")
 			}
+
+			// implied by ~shs: indicating v1
 			na.Ref = &ssb.FeedRef{
-				Algo: ssb.RefAlgoEd25519, // implied by ~shs: indicating v1
-				ID:   keyBytes[:32],
+				ID:   keyBuf[:32],
+				Algo: ssb.RefAlgoFeedSSB1,
 			}
 			return &na, nil
 		}

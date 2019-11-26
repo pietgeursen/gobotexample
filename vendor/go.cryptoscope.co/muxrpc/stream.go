@@ -1,4 +1,6 @@
-package muxrpc // import "go.cryptoscope.co/muxrpc"
+// SPDX-License-Identifier: MIT
+
+package muxrpc
 
 import (
 	"context"
@@ -223,7 +225,6 @@ func (str *stream) Close() error {
 // Close closes the stream and sends the EndErr message.
 func (str *stream) CloseWithError(closeErr error) error {
 	if str.outCap == streamCapOnce && !str.closed {
-		// TODO
 		return str.doCloseWithError(closeErr)
 	}
 
@@ -252,6 +253,12 @@ func (str *stream) doCloseWithError(closeErr error) error {
 		return errors.Wrapf(os.ErrClosed, "muxrpc/stream(%d): already closed (wanted to close with: %v)", str.req, closeErr)
 	}
 
+	if closeErr == ErrSessionTerminated {
+		close(str.closeCh)
+		str.closed = true
+		return nil
+	}
+
 	var (
 		pkt *codec.Packet
 		err error
@@ -273,7 +280,7 @@ func (str *stream) doCloseWithError(closeErr error) error {
 		err = str.pktSink.Pour(context.TODO(), pkt)
 	})
 
-	if IsSinkClosed(err) {
+	if IsSinkClosed(err) || isAlreadyClosed(err) {
 		// log.Printf("muxrpc: stream(%d) sink closed", str.req)
 		return nil
 	}

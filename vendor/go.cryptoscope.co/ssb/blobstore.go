@@ -1,7 +1,10 @@
+// SPDX-License-Identifier: MIT
+
 package ssb
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"go.cryptoscope.co/luigi"
@@ -17,7 +20,7 @@ const (
 )
 
 // BlobStore is the interface of our blob store
-//go:generate counterfeiter -o mock/blobstore.go . BlobStore
+//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -o mock/blobstore.go . BlobStore
 type BlobStore interface {
 	// Get returns a reader of the blob with given ref.
 	Get(ref *BlobRef) (io.Reader, error)
@@ -38,7 +41,7 @@ type BlobStore interface {
 	Changes() luigi.Broadcast
 }
 
-//go:generate counterfeiter -o mock/wantmanager.go . WantManager
+//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -o mock/wantmanager.go . WantManager
 type WantManager interface {
 	luigi.Broadcast
 	Want(ref *BlobRef) error
@@ -46,6 +49,20 @@ type WantManager interface {
 	WantWithDist(ref *BlobRef, dist int64) error
 	//Unwant(ref *BlobRef) error
 	CreateWants(context.Context, luigi.Sink, muxrpc.Endpoint) luigi.Sink
+
+	AllWants() []BlobWant
+}
+
+type BlobWant struct {
+	Ref *BlobRef
+
+	// if Dist is negative, it is the hop count to the original wanter.
+	// if it is positive, it is the size of the blob.
+	Dist int64
+}
+
+func (w BlobWant) String() string {
+	return fmt.Sprintf("%s:%d", w.Ref.Ref()[1:5], w.Dist)
 }
 
 // BlobStoreNotification contains info on a single change of the blob store.

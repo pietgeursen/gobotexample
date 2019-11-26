@@ -1,20 +1,12 @@
-/*
-This file is part of secretstream.
+// SPDX-License-Identifier: MIT
 
-secretstream is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+/* Package secrethandshake is a Go implementation of Dominic Tarr's secret-handshake: https://github.com/auditdrivencrypto/secret-handshake
 
-secretstream is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
+Two instances of go-shs can secretly shake hands over a connection.
 
-You should have received a copy of the GNU General Public License
-along with secretstream.  If not, see <http://www.gnu.org/licenses/>.
+The implementation is compatible with the JS implementation.
+Run `npm ci && go test -tags interop_nodejs`.
 */
-
 package secrethandshake
 
 import (
@@ -29,6 +21,7 @@ import (
 
 	"github.com/agl/ed25519"
 	"github.com/agl/ed25519/extra25519"
+	"github.com/pkg/errors"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/nacl/box"
 )
@@ -54,6 +47,22 @@ type State struct {
 type EdKeyPair struct {
 	Public [ed25519.PublicKeySize]byte
 	Secret [ed25519.PrivateKeySize]byte
+}
+
+func NewKeyPair(public, secret []byte) (*EdKeyPair, error) {
+	var kp EdKeyPair
+	if n := copy(kp.Secret[:], secret); n != ed25519.PrivateKeySize {
+		return nil, errors.Errorf("NewKeyPair: invalid private key size:%d", n)
+	}
+	if n := copy(kp.Public[:], public); n != ed25519.PublicKeySize {
+		return nil, errors.Errorf("NewKeyPair: invalid public key size:%d", n)
+	}
+
+	if lo25519.IsEdLowOrder(public) {
+		return nil, errors.Errorf("NewKeyPair: invalid public key")
+	}
+
+	return &kp, nil
 }
 
 // CurveKeyPair is a keypair for use with github.com/agl/ed25519

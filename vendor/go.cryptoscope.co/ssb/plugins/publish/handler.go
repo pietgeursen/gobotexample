@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: MIT
+
 package publish
 
 import (
 	"context"
 
-	"go.cryptoscope.co/ssb/message"
+	"go.cryptoscope.co/ssb"
 
 	"github.com/cryptix/go/logging"
 	"github.com/pkg/errors"
@@ -22,12 +24,12 @@ func (h handler) HandleCall(ctx context.Context, req *muxrpc.Request, edp muxrpc
 		req.CloseWithError(errors.Errorf("publish: bad request name: %s", n))
 		return
 	}
-	if n := len(req.Args); n != 1 {
+	if n := len(req.Args()); n != 1 {
 		req.CloseWithError(errors.Errorf("publish: bad request. expected 1 argument got %d", n))
 		return
 	}
 
-	seq, err := h.publish.Append(req.Args[0])
+	seq, err := h.publish.Append(req.Args()[0])
 	if err != nil {
 		req.CloseWithError(errors.Wrap(err, "publish: pour failed"))
 		return
@@ -39,15 +41,15 @@ func (h handler) HandleCall(ctx context.Context, req *muxrpc.Request, edp muxrpc
 		return
 	}
 
-	msg, ok := msgv.(message.StoredMessage)
+	msg, ok := msgv.(ssb.Message)
 	if !ok {
 		req.CloseWithError(errors.Errorf("publish: unexpected message type: %T", msgv))
 		return
 	}
 
-	h.info.Log("info", "published new message", "rootSeq", seq.Seq(), "refKey", msg.Key.Ref())
+	h.info.Log("info", "published new message", "rootSeq", seq.Seq(), "refKey", msg.Key().Ref())
 
-	err = req.Return(ctx, msg.Key.Ref())
+	err = req.Return(ctx, msg.Key().Ref())
 	if err != nil {
 		req.CloseWithError(errors.Wrap(err, "publish: return failed"))
 		return

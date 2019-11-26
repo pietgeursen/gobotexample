@@ -1,19 +1,4 @@
-/*
-This file is part of go-muxrpc.
-
-go-muxrpc is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-go-muxrpc is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with go-muxrpc.  If not, see <http://www.gnu.org/licenses/>.
-*/
+// SPDX-License-Identifier: MIT
 
 package codec
 
@@ -29,7 +14,7 @@ type Reader struct{ r io.Reader }
 
 func NewReader(r io.Reader) *Reader { return &Reader{r} }
 
-// ReadPacket decodes the header from the underlying writer, and reads as many bytes as specified in it
+// ReadPacket decodes the header from the underlying reader, and reads as many bytes as specified in it
 // TODO: pass in packet pointer as arg to reduce allocations
 func (r *Reader) ReadPacket() (*Packet, error) {
 	var hdr Header

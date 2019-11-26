@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // +build darwin
 // +build arm arm64
 
@@ -9,12 +11,10 @@ import (
 )
 
 func badgerOpts(dbPath string) badger.Options {
-	opts := badger.DefaultOptions
-	opts.Dir = dbPath
-	opts.ValueDir = opts.Dir
+	opts := badger.DefaultOptions(dbPath)
+
 	// runtime throws MMIO can't allocate errors without this
 	// => badger failed to open: Invalid ValueLogLoadingMode, must be FileIO or MemoryMap
 	opts.ValueLogLoadingMode = options.FileIO
-
 	return opts
 }

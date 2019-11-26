@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package whoami
 
 import (
@@ -6,7 +8,6 @@ import (
 
 	"github.com/cryptix/go/logging"
 	"github.com/pkg/errors"
-
 	"go.cryptoscope.co/muxrpc"
 
 	"go.cryptoscope.co/ssb"
@@ -20,7 +21,7 @@ var (
 func checkAndLog(log logging.Interface, err error) {
 	if err != nil {
 		if err := logging.LogPanicWithStack(log, "checkAndLog", err); err != nil {
-			panic(err)
+			log.Log("event", "warning", "msg", "faild to write panic file", "err", err)
 		}
 	}
 }
@@ -38,13 +39,9 @@ type plugin struct {
 
 func (plugin) Name() string { return "whoami" }
 
-func (plugin) Method() muxrpc.Method {
-	return method
-}
+func (plugin) Method() muxrpc.Method { return method }
 
-func (wami plugin) Handler() muxrpc.Handler {
-	return wami.h
-}
+func (wami plugin) Handler() muxrpc.Handler { return wami.h }
 
 func (plugin) WrapEndpoint(edp muxrpc.Endpoint) interface{} {
 	return endpoint{edp}
@@ -58,14 +55,18 @@ type handler struct {
 func (handler) HandleConnect(ctx context.Context, edp muxrpc.Endpoint) {}
 
 func (h handler) HandleCall(ctx context.Context, req *muxrpc.Request, edp muxrpc.Endpoint) {
-	h.log.Log("event", "onCall", "handler", "connect", "args", fmt.Sprintf("%v", req.Args), "method", req.Method)
 	// TODO: push manifest check into muxrpc
 	if req.Type == "" {
 		req.Type = "async"
 	}
+	if req.Method.String() != "whoami" {
+		req.CloseWithError(fmt.Errorf("wrong method"))
+		return
+	}
 	type ret struct {
 		ID string `json:"id"`
 	}
+
 	err := req.Return(ctx, ret{h.id.Ref()})
 	checkAndLog(h.log, err)
 }

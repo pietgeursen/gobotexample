@@ -7,10 +7,15 @@ import (
 	"github.com/hashicorp/go-multierror"
 )
 
+// Broadcast is an interface for registering one or more Sinks to recieve
+// updates.
 type Broadcast interface {
-	Register(Sink) func()
+	// Register a Sink for updates to be sent.
+	Register(dst Sink) func()
 }
 
+// NewBroadcast returns the Sink, to write to the broadcaster, and the new
+// broadcast instance.
 func NewBroadcast() (Sink, Broadcast) {
 	bcst := broadcast{sinks: make(map[*Sink]struct{})}
 
@@ -22,6 +27,7 @@ type broadcast struct {
 	sinks map[*Sink]struct{}
 }
 
+// Register implements the Broadcast interface.
 func (bcst *broadcast) Register(sink Sink) func() {
 	bcst.Lock()
 	defer bcst.Unlock()
@@ -37,6 +43,7 @@ func (bcst *broadcast) Register(sink Sink) func() {
 
 type broadcastSink broadcast
 
+// Pour implements the Sink interface.
 func (bcst *broadcastSink) Pour(ctx context.Context, v interface{}) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -49,34 +56,17 @@ func (bcst *broadcastSink) Pour(ctx context.Context, v interface{}) error {
 	}
 	bcst.Unlock()
 
-	var (
-		wg    sync.WaitGroup
-		errCh = make(chan error, len(sinks))
-		merr  *multierror.Error
-	)
-
-	wg.Add(len(sinks))
-	for _, sink_ := range sinks {
-		go func(sink Sink) {
-			defer wg.Done()
-
-			err := sink.Pour(ctx, v)
-			if err != nil {
-				errCh <- err
-				return
-			}
-		}(sink_)
-	}
-	wg.Wait()
-	close(errCh)
-
-	for err := range errCh {
-		merr = multierror.Append(merr, err)
+	for _, s := range sinks {
+		err := s.Pour(ctx, v)
+		if err != nil {
+			return err
+		}
 	}
 
-	return merr.ErrorOrNil()
+	return nil
 }
 
+// Close implements the Sink interface.
 func (bcst *broadcastSink) Close() error {
 	var sinks []Sink
 

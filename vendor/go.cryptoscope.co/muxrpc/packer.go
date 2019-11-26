@@ -1,11 +1,15 @@
-package muxrpc // import "go.cryptoscope.co/muxrpc"
+// SPDX-License-Identifier: MIT
+
+package muxrpc
 
 import (
 	"context"
 	stderr "errors"
 	"io"
+	"net"
 	"os"
 	"sync"
+	"syscall"
 
 	"go.cryptoscope.co/luigi"
 	"go.cryptoscope.co/muxrpc/codec"
@@ -63,7 +67,7 @@ func (pkr *packer) Closed() <-chan struct{} {
 }
 
 // Next returns the next packet from the underlying stream.
-func (pkr *packer) Next(_ context.Context) (interface{}, error) {
+func (pkr *packer) Next(ctx context.Context) (interface{}, error) {
 	pkr.rl.Lock()
 	defer pkr.rl.Unlock()
 
@@ -73,13 +77,12 @@ func (pkr *packer) Next(_ context.Context) (interface{}, error) {
 		if err != nil {
 			return nil, luigi.EOS{}
 		}
+	case <-ctx.Done():
+		return nil, errors.Wrap(ctx.Err(), "muxrpc/packer: read packet canceled")
 	default:
 	}
 
 	if err != nil {
-		if cerr := pkr.Close(); cerr != nil {
-			return nil, errors.Wrapf(cerr, "error closing connection on read error %v", err)
-		}
 
 		if errors.Cause(err) == io.EOF {
 			return nil, luigi.EOS{}
@@ -111,10 +114,6 @@ func (pkr *packer) Pour(_ context.Context, v interface{}) error {
 	err := pkr.w.WritePacket(pkt)
 	if err != nil {
 
-		if cerr := pkr.Close(); cerr != nil {
-			return errors.Wrapf(cerr, "error closing connection on write err:%v", err)
-		}
-
 	}
 
 	return errors.Wrap(err, "muxrpc: error writing packet")
@@ -140,7 +139,7 @@ func isAlreadyClosed(err error) bool {
 	}
 
 	causeErr := errors.Cause(err)
-	if causeErr == os.ErrClosed {
+	if causeErr == os.ErrClosed || causeErr == io.ErrClosedPipe {
 		return true
 	}
 
@@ -148,6 +147,16 @@ func isAlreadyClosed(err error) bool {
 		if sysErr.Err == os.ErrClosed {
 			// fmt.Printf("debug: found syscall err: %T) %s\n", causeErr, causeErr)
 			return true
+		}
+	}
+
+	if opErr, ok := causeErr.(*net.OpError); ok {
+		if syscallErr, ok := opErr.Err.(*os.SyscallError); ok {
+			if errNo, ok := syscallErr.Err.(syscall.Errno); ok {
+				if errNo == syscall.EPIPE {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -159,6 +168,9 @@ func (pkr *packer) Close() error {
 	defer pkr.cl.Unlock()
 	select {
 	case <-pkr.closing:
+		if isAlreadyClosed(pkr.closeErr) {
+			return nil
+		}
 		return errors.Wrap(pkr.closeErr, "packer: already closed")
 	default:
 	}
