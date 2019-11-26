@@ -39,8 +39,6 @@ type Statuser interface {
 }
 
 type PeerStatus struct {
-	Id  string
-	IP  string
 	Addr  string
 	Since string
 }

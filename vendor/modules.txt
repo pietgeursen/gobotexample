@@ -18,7 +18,7 @@ github.com/dgraph-io/badger/pb
 github.com/dgraph-io/badger/skl
 github.com/dgraph-io/badger/table
 github.com/dgraph-io/badger/y
-# github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
+# github.com/dgryski/go-farm v0.0.0-20191112170834-c2139c5d712b
 github.com/dgryski/go-farm
 # github.com/dustin/go-humanize v1.0.0
 github.com/dustin/go-humanize
