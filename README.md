@@ -1,7 +1,6 @@
-# gobotexample
+# sunrise-social-go-sbot
 
-this is a starting example to use the go-ssb "ssb-server" as a package.
-
+this repo helps you build [go-ssb](https://github.com/cryptoscope/ssb) into an android / iOS (untested) library. 
 
 # gomobile
 
