@@ -49,19 +49,8 @@ func checkAndLog(err error) {
 
 var ErrNotInitialized = errors.New("gobot: not initialized")
 
-// @collection-wrapper
-type Recipients struct {
-	RecipientKey string
-}
-
-func (*Recipients) Equal(rhs *Recipients) bool {
-	return true
-}
-
 //How much is checked by the stack if a not json string gets passed?
-func Publish(message string, recipientKeys []byte) error {
-	var recps = RecipientsCollection{}
-	recps.UnmarshalJSON(recipientKeys)
+func Publish(message string) error {
 
 	var v interface{}
 	err := json.Unmarshal([]byte(message), &v)
