@@ -223,3 +223,9 @@ func nextInfix() string {
 	randmu.Unlock()
 	return strconv.Itoa(int(1e9 + r%1e9))[1:]
 }
+
+/////
+
+
+// IsEOF reports whether err is an EOF condition.
+func IsEOF(err error) bool { return err == io.EOF }
