@@ -76,7 +76,7 @@ go.cryptoscope.co/librarian/badger
 # go.cryptoscope.co/luigi v0.3.5-0.20190924074117-8ca146aad481
 go.cryptoscope.co/luigi
 go.cryptoscope.co/luigi/mfr
-# go.cryptoscope.co/margaret v0.0.12-0.20191015084618-03ad79a9a24a
+# go.cryptoscope.co/margaret v0.1.1-0.20191128192726-25be9c098bc9
 go.cryptoscope.co/margaret
 go.cryptoscope.co/margaret/multilog
 go.cryptoscope.co/margaret/codec/msgpack
@@ -87,17 +87,17 @@ go.cryptoscope.co/margaret/internal/persist
 go.cryptoscope.co/margaret/internal/persist/fs
 go.cryptoscope.co/margaret/internal/persist/mkv
 go.cryptoscope.co/margaret/internal/persist/sqlite
-# go.cryptoscope.co/muxrpc v1.5.3-0.20191011092035-573ec084427a
+# go.cryptoscope.co/muxrpc v1.5.4-0.20191205134222-b1563255bffa
 go.cryptoscope.co/muxrpc
 go.cryptoscope.co/muxrpc/codec
-# go.cryptoscope.co/netwrap v0.1.0
+# go.cryptoscope.co/netwrap v0.1.1
 go.cryptoscope.co/netwrap
 # go.cryptoscope.co/secretstream v1.2.1
 go.cryptoscope.co/secretstream
 go.cryptoscope.co/secretstream/boxstream
 go.cryptoscope.co/secretstream/secrethandshake
 go.cryptoscope.co/secretstream/internal/lo25519
-# go.cryptoscope.co/ssb v0.0.0-20191015090058-908143fdc445
+# go.cryptoscope.co/ssb v0.0.0-20191218210832-9339f67aa758
 go.cryptoscope.co/ssb
 go.cryptoscope.co/ssb/multilogs
 go.cryptoscope.co/ssb/repo
@@ -110,6 +110,7 @@ go.cryptoscope.co/ssb/indexes
 go.cryptoscope.co/ssb/internal/ctxutils
 go.cryptoscope.co/ssb/internal/multiserver
 go.cryptoscope.co/ssb/internal/mutil
+go.cryptoscope.co/ssb/internal/netwraputil
 go.cryptoscope.co/ssb/message
 go.cryptoscope.co/ssb/network
 go.cryptoscope.co/ssb/plugins/blobs
@@ -125,7 +126,7 @@ go.cryptoscope.co/ssb/plugins/whoami
 go.cryptoscope.co/ssb/plugins2
 go.cryptoscope.co/ssb/message/legacy
 go.cryptoscope.co/ssb/internal/transform
-# go.mindeco.de/ssb-gabbygrove v0.1.5
+# go.mindeco.de/ssb-gabbygrove v0.1.6
 go.mindeco.de/ssb-gabbygrove
 # golang.org/x/crypto v0.0.0-20191002192127-34f69633bfdc
 golang.org/x/crypto/ed25519
@@ -192,7 +193,7 @@ gonum.org/v1/gonum/internal/cmplx64
 gonum.org/v1/gonum/internal/math32
 # gopkg.in/yaml.v2 v2.2.2
 gopkg.in/yaml.v2
-# modernc.org/fileutil v1.0.0
+# modernc.org/fileutil v1.0.1-0.20191218210630-be89d16144d3
 modernc.org/fileutil
 # modernc.org/internal v1.0.0
 modernc.org/internal/buffer

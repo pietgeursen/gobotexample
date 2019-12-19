@@ -24,18 +24,35 @@ import (
 
 // Builder can build a trust graph and answer other questions
 type Builder interface {
-	librarian.SinkIndex
 
+	// Build a complete graph of all follow/block relations
 	Build() (*Graph, error)
+
+	// Return the stored state between a and b
+	// 0: no / unfollow
+	// 1: following
+	// -1: blocking
+	State(from, to *ssb.FeedRef) int
+
+	// Follows returns a set of all people ref follows
 	Follows(*ssb.FeedRef) (*StrFeedSet, error)
+
 	Hops(*ssb.FeedRef, int) *StrFeedSet
+
 	Authorizer(from *ssb.FeedRef, maxHops int) ssb.Authorizer
+
+	DeleteAuthor(who *ssb.FeedRef) error
+}
+
+type IndexingBuilder interface {
+	Builder
+
+	OpenIndex() librarian.SinkIndex
 }
 
 type builder struct {
-	librarian.SinkIndex
 	kv  *badger.DB
-	idx librarian.Index
+	idx librarian.SeqSetterIndex
 	log kitlog.Logger
 
 	cacheLock   sync.Mutex
@@ -44,15 +61,16 @@ type builder struct {
 
 // NewBuilder creates a Builder that is backed by a badger database
 func NewBuilder(log kitlog.Logger, db *badger.DB) *builder {
-	contactsIdx := libbadger.NewIndex(db, 0)
-
 	b := &builder{
 		kv:  db,
-		idx: contactsIdx,
+		idx: libbadger.NewIndex(db, 0),
 		log: log,
 	}
+	return b
+}
 
-	b.SinkIndex = librarian.NewSinkIndex(func(ctx context.Context, seq margaret.Seq, val interface{}, idx librarian.SetterIndex) error {
+func (b *builder) OpenIndex() librarian.SinkIndex {
+	return librarian.NewSinkIndex(func(ctx context.Context, seq margaret.Seq, val interface{}, idx librarian.SetterIndex) error {
 		b.cacheLock.Lock()
 		defer b.cacheLock.Unlock()
 
@@ -66,7 +84,7 @@ func NewBuilder(log kitlog.Logger, db *badger.DB) *builder {
 		abs, ok := val.(ssb.Message)
 		if !ok {
 			err := errors.Errorf("graph/idx: invalid msg value %T", val)
-			log.Log("msg", "contact eval failed", "reason", err)
+			b.log.Log("msg", "contact eval failed", "reason", err)
 			return err
 		}
 
@@ -100,9 +118,58 @@ func NewBuilder(log kitlog.Logger, db *badger.DB) *builder {
 		b.cachedGraph = nil
 		// TODO: patch existing graph
 		return nil
-	}, contactsIdx)
+	}, b.idx)
+}
 
-	return b
+func (bld *builder) State(a, b *ssb.FeedRef) int {
+	addr := a.StoredAddr()
+	addr += b.StoredAddr()
+	obv, err := bld.idx.Get(context.Background(), addr)
+	if err != nil {
+		return 0
+	}
+
+	stv, err := obv.Value()
+	if err != nil {
+		return 0
+	}
+
+	state, ok := stv.(int)
+	if !ok {
+		return 0
+	}
+
+	switch state {
+	case 1:
+		return 1
+	case 2:
+		return -1
+	default:
+		return 0
+	}
+
+	return -1
+}
+
+func (b *builder) DeleteAuthor(who *ssb.FeedRef) error {
+	b.cacheLock.Lock()
+	defer b.cacheLock.Unlock()
+	b.cachedGraph = nil
+	return b.kv.Update(func(txn *badger.Txn) error {
+		iter := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer iter.Close()
+
+		prefix := []byte(who.StoredAddr())
+		for iter.Seek(prefix); iter.ValidForPrefix(prefix); iter.Next() {
+			it := iter.Item()
+
+			k := it.Key()
+			if err := txn.Delete(k); err != nil {
+				return errors.Wrapf(err, "DeleteAuthor: failed to drop record %x", k)
+			}
+		}
+		return nil
+	})
 }
 
 func (b *builder) Authorizer(from *ssb.FeedRef, maxHops int) ssb.Authorizer {
@@ -115,8 +182,7 @@ func (b *builder) Authorizer(from *ssb.FeedRef, maxHops int) ssb.Authorizer {
 }
 
 func (b *builder) Build() (*Graph, error) {
-	dg := simple.NewWeightedDirectedGraph(0, math.Inf(1))
-	known := make(key2node)
+	dg := NewGraph()
 
 	b.cacheLock.Lock()
 	defer b.cacheLock.Unlock()
@@ -153,19 +219,19 @@ func (b *builder) Build() (*Graph, error) {
 			}
 
 			bfrom := librarian.Addr(rawFrom)
-			nFrom, has := known[bfrom]
+			nFrom, has := dg.lookup[bfrom]
 			if !has {
 				nFrom = &contactNode{dg.NewNode(), &from, ""}
 				dg.AddNode(nFrom)
-				known[bfrom] = nFrom
+				dg.lookup[bfrom] = nFrom
 			}
 
 			bto := librarian.Addr(rawTo)
-			nTo, has := known[bto]
+			nTo, has := dg.lookup[bto]
 			if !has {
 				nTo = &contactNode{dg.NewNode(), &to, ""}
 				dg.AddNode(nTo)
-				known[bto] = nTo
+				dg.lookup[bto] = nTo
 			}
 
 			if nFrom.ID() == nTo.ID() {
@@ -204,10 +270,8 @@ func (b *builder) Build() (*Graph, error) {
 		return nil
 	})
 
-	g := &Graph{lookup: known}
-	g.WeightedDirectedGraph = dg
-	b.cachedGraph = g
-	return g, err
+	b.cachedGraph = dg
+	return dg, err
 }
 
 type Lookup struct {
@@ -268,13 +332,9 @@ func (b *builder) Follows(forRef *ssb.FeedRef) (*StrFeedSet, error) {
 // max == 2: max:1 + follows of their friends
 func (b *builder) Hops(from *ssb.FeedRef, max int) *StrFeedSet {
 	max++
-	walked := NewFeedSet(1000)
-	err := walked.AddRef(from)
-	if err != nil {
-		b.log.Log("event", "error", "msg", "add failed", "err", err)
-		return nil
-	}
-	err = b.recurseHops(walked, from, max)
+	walked := NewFeedSet(0)
+	visited := make(map[string]struct{}) // tracks the nodes we already recursed from (so we don't do them multiple times on common friends)
+	err := b.recurseHops(walked, visited, from, max)
 	if err != nil {
 		b.log.Log("event", "error", "msg", "recurse failed", "err", err)
 		return nil
@@ -282,9 +342,18 @@ func (b *builder) Hops(from *ssb.FeedRef, max int) *StrFeedSet {
 	return walked
 }
 
-func (b *builder) recurseHops(walked *StrFeedSet, from *ssb.FeedRef, depth int) error {
+func (b *builder) recurseHops(walked *StrFeedSet, vis map[string]struct{}, from *ssb.FeedRef, depth int) error {
 	// b.log.Log("recursing", from.Ref(), "d", depth)
 	if depth == 0 {
+		return nil
+	}
+
+	if _, ok := vis[from.Ref()]; ok {
+		return nil
+	}
+
+	if err := walked.AddRef(from); err != nil {
+		b.log.Log("event", "error", "msg", "add failed", "err", err)
 		return nil
 	}
 
@@ -311,11 +380,14 @@ func (b *builder) recurseHops(walked *StrFeedSet, from *ssb.FeedRef, depth int) 
 
 		isF := dstFollows.Has(from)
 		if isF { // found a friend, recurse
-			if err := b.recurseHops(walked, followedByFrom, depth-1); err != nil {
+			if err := b.recurseHops(walked, vis, followedByFrom, depth-1); err != nil {
 				return err
 			}
 		}
 		// b.log.Log("depth", depth, "from", from.Ref()[1:5], "follows", followedByFrom.Ref()[1:5], "friend", isF, "cnt", dstFollows.Count())
 	}
+
+	vis[from.Ref()] = struct{}{}
+
 	return nil
 }

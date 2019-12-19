@@ -20,16 +20,20 @@ import (
 	"go.cryptoscope.co/ssb"
 )
 
+const DefaultMaxSize = 5 * 1024 * 1024
+
 type MaxSize int
 
 var ErrBlobBlocked = errors.New("blobstore: unable to receive blob")
 
 func NewWantManager(log logging.Interface, bs ssb.BlobStore, opts ...interface{}) ssb.WantManager {
 	wmgr := &wantManager{
-		bs:      bs,
-		info:    log,
-		wants:   make(map[string]int64),
-		blocked: make(map[string]struct{}),
+		bs:        bs,
+		info:      log,
+		wants:     make(map[string]int64),
+		blocked:   make(map[string]struct{}),
+		procs:     make(map[string]*wantProc),
+		available: make(chan *hasBlob),
 	}
 
 	for i, o := range opts {
@@ -41,12 +45,14 @@ func NewWantManager(log logging.Interface, bs ssb.BlobStore, opts ...interface{}
 		case MaxSize:
 			wmgr.maxSize = uint(v)
 		default:
-			log.Log("warning", "unhandled option", "i", i, "type", fmt.Sprintf("%T", o))
+			if v != nil {
+				level.Warn(log).Log("event", "unhandled option", "i", i, "type", fmt.Sprintf("%T", o))
+			}
 		}
 	}
 
 	if wmgr.maxSize == 0 {
-		wmgr.maxSize = 5 * 1024 * 1024
+		wmgr.maxSize = DefaultMaxSize
 	}
 
 	wmgr.promGaugeSet("proc", 0)
@@ -80,6 +86,41 @@ func NewWantManager(log logging.Interface, bs ssb.BlobStore, opts ...interface{}
 		return nil
 	}))
 
+	go func() {
+	workChan:
+		for has := range wmgr.available {
+			sz, _ := wmgr.bs.Size(has.Want.Ref)
+			if sz > 0 {
+				level.Debug(log).Log("msg", "skipping already stored blob")
+				continue
+			}
+
+			initialFrom := has.Proc.edp.Remote().String()
+
+			// trying the one we got it from first
+			err := wmgr.getBlob(has.Proc.rootCtx, has.Proc.edp, has.Want.Ref)
+			if err == nil {
+				continue
+			}
+
+			wmgr.l.Lock()
+			// iterate through other open procs and try them
+			for remote, proc := range wmgr.procs {
+				if remote == initialFrom {
+					continue
+				}
+
+				err := wmgr.getBlob(proc.rootCtx, proc.edp, has.Want.Ref)
+				if err == nil {
+					continue workChan
+				}
+			}
+			delete(wmgr.wants, has.Want.Ref.Ref())
+			level.Warn(wmgr.info).Log("event", "blob retreive failed", "n", len(wmgr.procs))
+			wmgr.l.Unlock()
+		}
+	}()
+
 	return wmgr
 }
 
@@ -90,10 +131,17 @@ type wantManager struct {
 
 	maxSize uint
 
+	// blob references that couldn't be fetched multiple times
 	blocked map[string]struct{}
 
+	// our own set of wants
 	wants    map[string]int64
 	wantSink luigi.Sink
+
+	// the set of peers we interact with
+	procs map[string]*wantProc
+
+	available chan *hasBlob
 
 	l sync.Mutex
 
@@ -102,7 +150,44 @@ type wantManager struct {
 	gauge  metrics.Gauge
 }
 
+func (wmgr *wantManager) getBlob(ctx context.Context, edp muxrpc.Endpoint, ref *ssb.BlobRef) error {
+	log := log.With(wmgr.info, "event", "blobs.get", "ref", ref.Ref(), "remote", edp.Remote().String())
+
+	arg := GetWithSize{ref, wmgr.maxSize}
+	src, err := edp.Source(ctx, []byte{}, muxrpc.Method{"blobs", "get"}, arg)
+	if err != nil {
+		err = errors.Wrap(err, "blob create source failed")
+		level.Warn(log).Log("err", err)
+		return err
+	}
+
+	r := muxrpc.NewSourceReader(src)
+	r = io.LimitReader(r, int64(wmgr.maxSize))
+	newBr, err := wmgr.bs.Put(r)
+	if err != nil {
+		err = errors.Wrap(err, "blob data piping failed")
+		level.Warn(log).Log("err", err)
+		return err
+	}
+
+	if !newBr.Equal(ref) {
+		// TODO: make this a type of error?
+		wmgr.bs.Delete(newBr)
+		level.Warn(log).Log("msg", "removed after missmatch", "want", ref.Ref())
+		return errors.Errorf("blob inconsitency(or size limit) - actualRef(%s) expectedRef(%s)", newBr.Ref(), ref.Ref())
+	}
+	sz, _ := wmgr.bs.Size(newBr)
+	level.Info(log).Log("msg", "stored", "ref", ref.Ref(), "sz", sz)
+	return nil
+}
+
+type hasBlob struct {
+	Want ssb.BlobWant
+	Proc *wantProc
+}
+
 func (wmgr *wantManager) promEvent(name string, n float64) {
+	name = "blobs." + name
 	if wmgr.evtCtr != nil {
 		wmgr.evtCtr.With("event", name).Add(n)
 	} else {
@@ -112,6 +197,7 @@ func (wmgr *wantManager) promEvent(name string, n float64) {
 }
 
 func (wmgr *wantManager) promGauge(name string, n float64) {
+	name = "blobs." + name
 	if wmgr.gauge != nil {
 		wmgr.gauge.With("part", name).Add(n)
 	} else {
@@ -119,6 +205,7 @@ func (wmgr *wantManager) promGauge(name string, n float64) {
 	}
 }
 func (wmgr *wantManager) promGaugeSet(name string, n int) {
+	name = "blobs." + name
 	if wmgr.gauge != nil {
 		wmgr.gauge.With("part", name).Set(float64(n))
 	} else {
@@ -186,6 +273,16 @@ func (wmgr *wantManager) WantWithDist(ref *ssb.BlobRef, dist int64) error {
 }
 
 func (wmgr *wantManager) CreateWants(ctx context.Context, sink luigi.Sink, edp muxrpc.Endpoint) luigi.Sink {
+	wmgr.l.Lock()
+	defer wmgr.l.Unlock()
+	err := sink.Pour(ctx, wmgr.wants)
+	if err != nil {
+		if !muxrpc.IsSinkClosed(err) {
+			level.Error(wmgr.info).Log("event", "wantProc.init/Pour", "err", err.Error())
+		}
+		return nil
+	}
+
 	proc := &wantProc{
 		rootCtx:     ctx,
 		bs:          wmgr.bs,
@@ -195,27 +292,6 @@ func (wmgr *wantManager) CreateWants(ctx context.Context, sink luigi.Sink, edp m
 		edp:         edp,
 	}
 
-	proc.init()
-
-	return proc
-}
-
-type wantProc struct {
-	rootCtx context.Context
-
-	info log.Logger
-
-	bs   ssb.BlobStore
-	wmgr *wantManager
-	out  luigi.Sink
-	done func(func())
-	edp  muxrpc.Endpoint
-
-	l           sync.Mutex
-	remoteWants map[string]int64
-}
-
-func (proc *wantProc) init() {
 	var remote = "unknown"
 	if r, err := ssb.GetFeedRefFromAddr(proc.edp.Remote()); err == nil {
 		remote = r.Ref()[1:5]
@@ -239,15 +315,29 @@ func (proc *wantProc) init() {
 		if next != nil {
 			next()
 		}
+		proc.wmgr.l.Lock()
+		delete(proc.wmgr.procs, proc.edp.Remote().String())
+		proc.wmgr.l.Unlock()
 	}
 
-	proc.wmgr.l.Lock()
+	wmgr.procs[edp.Remote().String()] = proc
 
-	err := proc.out.Pour(proc.rootCtx, proc.wmgr.wants)
-	if err != nil {
-		level.Error(proc.info).Log("event", "wantProc.init/Pour", "err", err.Error())
-	}
-	proc.wmgr.l.Unlock()
+	return proc
+}
+
+type wantProc struct {
+	rootCtx context.Context
+
+	info log.Logger
+
+	bs   ssb.BlobStore
+	wmgr *wantManager
+	out  luigi.Sink
+	done func(func())
+	edp  muxrpc.Endpoint
+
+	l           sync.Mutex
+	remoteWants map[string]int64
 }
 
 // updateFromBlobStore listens for adds and if they are wanted notifies the remote via it's sink
@@ -286,7 +376,7 @@ func (proc *wantProc) updateFromBlobStore(ctx context.Context, v interface{}, er
 
 	m := map[string]int64{notif.Ref.Ref(): sz}
 	err = proc.out.Pour(ctx, m)
-	dbg.Log("cause", "has wanted blob")
+	dbg.Log("cause", "broadcasting received blob", "sz", sz)
 	return errors.Wrap(err, "errors pouring into sink")
 
 }
@@ -333,27 +423,9 @@ func (proc *wantProc) updateWants(ctx context.Context, v interface{}, err error)
 	return proc.out.Pour(ctx, newW)
 }
 
-func (proc *wantProc) getBlob(ctx context.Context, ref *ssb.BlobRef) error {
-	src, err := proc.edp.Source(ctx, &WantMsg{}, muxrpc.Method{"blobs", "get"}, ref.Ref())
-	if err != nil {
-		return errors.Wrap(err, "blob create source failed")
-	}
-
-	r := muxrpc.NewSourceReader(src)
-	r = io.LimitReader(r, int64(proc.wmgr.maxSize))
-	newBr, err := proc.bs.Put(r)
-	if err != nil {
-		return errors.Wrap(err, "blob data piping failed")
-	}
-
-	if newBr.Ref() != ref.Ref() {
-		// TODO: make this a type of error?
-		proc.bs.Delete(newBr)
-		level.Warn(proc.info).Log("blob", "removed after missmatch", "want", ref.Ref())
-		return errors.Errorf("blob inconsitency(or size limit) - actualRef(%s) expectedRef(%s)", newBr.Ref(), ref.Ref())
-	}
-	level.Info(proc.info).Log("blob", "stored", "ref", ref.Ref())
-	return nil
+type GetWithSize struct {
+	Key *ssb.BlobRef `json:"key"`
+	Max uint         `json:"max"`
 }
 
 func (proc *wantProc) Close() error {
@@ -401,18 +473,18 @@ func (proc *wantProc) Pour(ctx context.Context, v interface{}) error {
 			mOut[w.Ref.Ref()] = s
 		} else {
 			if proc.wmgr.Wants(w.Ref) {
-				proc.info.Log("event", "createWants.In", "msg", "peer has blob we want", "ref", w.Ref.Ref())
-				go func(ref *ssb.BlobRef) {
-					// cryptix: feel like we might need to wrap rootCtx in, too?
-					if err := proc.getBlob(ctx, ref); err != nil {
-						proc.info.Log("event", "blob fetch err", "ref", ref.Ref(), "error", err.Error())
-						proc.wmgr.l.Lock()
-						// TODO: only block after a certain number of attempts?!
-						delete(proc.wmgr.wants, ref.Ref())
-						proc.wmgr.blocked[ref.Ref()] = struct{}{}
-						proc.wmgr.l.Unlock()
-					}
-				}(w.Ref)
+				if uint(w.Dist) > proc.wmgr.maxSize {
+					dbg.Log("msg", "blob we wanted is larger then our max setting", "ref", w.Ref.Ref(), "diff", proc.wmgr.maxSize-uint(w.Dist))
+					proc.wmgr.l.Lock()
+					delete(proc.wmgr.wants, w.Ref.Ref())
+					proc.wmgr.l.Unlock()
+					continue
+				}
+
+				proc.wmgr.available <- &hasBlob{
+					Want: w,
+					Proc: proc,
+				}
 			}
 		}
 	}

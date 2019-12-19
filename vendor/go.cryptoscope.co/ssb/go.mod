@@ -26,16 +26,17 @@ require (
 	github.com/ugorji/go/codec v1.1.7
 	go.cryptoscope.co/librarian v0.2.0
 	go.cryptoscope.co/luigi v0.3.5-0.20190924074117-8ca146aad481
-	go.cryptoscope.co/margaret v0.0.12-0.20191015084618-03ad79a9a24a
-	go.cryptoscope.co/muxrpc v1.5.3-0.20191011092035-573ec084427a
-	go.cryptoscope.co/netwrap v0.1.0
+	go.cryptoscope.co/margaret v0.1.1-0.20191128192726-25be9c098bc9
+	go.cryptoscope.co/muxrpc v1.5.4-0.20191205134222-b1563255bffa
+	go.cryptoscope.co/netwrap v0.1.1
 	go.cryptoscope.co/secretstream v1.2.1
-	go.mindeco.de/ssb-gabbygrove v0.1.5
+	go.mindeco.de/ssb-gabbygrove v0.1.6
 	golang.org/x/crypto v0.0.0-20191002192127-34f69633bfdc
 	golang.org/x/sync v0.0.0-20190911185100-cd5d95a43a6e
 	golang.org/x/text v0.3.2
 	gonum.org/v1/gonum v0.0.0-20190904110519-2065cbd6b42a
 	gopkg.in/urfave/cli.v2 v2.0.0-20190806201727-b62605953717
+	modernc.org/fileutil v1.0.1-0.20191218210630-be89d16144d3 // indirect
 	modernc.org/kv v1.0.0
 )
 

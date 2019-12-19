@@ -5,6 +5,7 @@ package sbot
 import (
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"time"
 
@@ -16,63 +17,19 @@ import (
 	"go.cryptoscope.co/netwrap"
 	"go.cryptoscope.co/ssb"
 	"go.cryptoscope.co/ssb/internal/multiserver"
+	"go.cryptoscope.co/ssb/multilogs"
 )
 
-func (sbot *Sbot) Status() (*ssb.Status, error) {
+func (sbot *Sbot) Status() (ssb.Status, error) {
 	v, err := sbot.RootLog.Seq().Value()
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to get root log sequence")
+		return ssb.Status{}, errors.Wrap(err, "failed to get root log sequence")
 	}
 
 	s := ssb.Status{
+		PID:   os.Getpid(),
 		Root:  v.(margaret.Seq),
 		Blobs: sbot.WantManager.AllWants(),
-	}
-	mlogNames := sbot.GetIndexNamesMultiLog()
-	s.Indexes.MultiLog = make(map[string]int64, len(mlogNames))
-
-	for _, name := range mlogNames {
-
-		mlog, has := sbot.GetMultiLog(name)
-		if !has {
-			continue
-		}
-
-		if qspec, has := mlog.(interface{ QuerySpec() margaret.QuerySpec }); has {
-			var gc getCurrent
-			err := qspec.QuerySpec()(&gc)
-			if err != nil {
-				return nil, errors.Wrapf(err, "failed to get index state of %s", name)
-			}
-			s.Indexes.MultiLog[name] = gc.seq
-		} else {
-			// fmt.Printf("DEBUG/mlog(%s) type:%T\n", name, mlog)
-			s.Indexes.MultiLog[name] = -2
-		}
-	}
-
-	simpleNames := sbot.GetIndexNamesSimple()
-	s.Indexes.Simple = make(map[string]int64, len(simpleNames))
-	for _, name := range simpleNames {
-
-		idx, has := sbot.GetSimpleIndex(name)
-		if !has {
-			continue
-		}
-
-		if qspec, has := idx.(interface{ QuerySpec() margaret.QuerySpec }); has {
-			var gc getCurrent
-			err := qspec.QuerySpec()(&gc)
-			if err != nil {
-				return nil, errors.Wrapf(err, "failed to get index state of %s", name)
-			}
-
-			s.Indexes.Simple[name] = gc.seq
-		} else {
-			// fmt.Printf("DEBUG/simple(%s) type:%T\n", name, idx)
-			s.Indexes.Simple[name] = -2
-		}
-
 	}
 
 	edps := sbot.Network.GetAllEndpoints()
@@ -92,7 +49,7 @@ func (sbot *Sbot) Status() (*ssb.Status, error) {
 			Since: humanize.Time(time.Now().Add(-es.Since)),
 		})
 	}
-	return &s, nil
+	return s, nil
 }
 
 type byConnTime []ssb.EndpointStat
@@ -109,27 +66,6 @@ func (bct byConnTime) Swap(i int, j int) {
 	bct[i], bct[j] = bct[j], bct[i]
 }
 
-type getCurrent struct {
-	seq int64
-}
-
-func (qry *getCurrent) Gt(s margaret.Seq) error {
-	qry.seq = s.Seq()
-	return nil
-}
-
-func (qry *getCurrent) Gte(s margaret.Seq) error {
-	qry.seq = s.Seq() + 1
-	return nil
-}
-
-func (qry *getCurrent) Lt(s margaret.Seq) error  { return nil }
-func (qry *getCurrent) Lte(s margaret.Seq) error { return nil }
-func (qry *getCurrent) Limit(n int) error        { return nil }
-func (qry *getCurrent) Live(live bool) error     { return nil }
-func (qry *getCurrent) SeqWrap(wrap bool) error  { return nil }
-func (qry *getCurrent) Reverse(yes bool) error   { return nil }
-
 func (s *Sbot) FSCK(idxlog multilog.MultiLog) {
 
 	checkFatal := func(err error) {
@@ -145,7 +81,7 @@ func (s *Sbot) FSCK(idxlog multilog.MultiLog) {
 
 	if idxlog == nil {
 		var ok bool
-		idxlog, ok = s.GetMultiLog("userFeeds")
+		idxlog, ok = s.GetMultiLog(multilogs.IndexNameFeeds)
 		if !ok {
 			checkFatal(errors.Errorf("no multilog"))
 			return
@@ -189,16 +125,5 @@ func (s *Sbot) FSCK(idxlog multilog.MultiLog) {
 			err = fmt.Errorf("light fsck failed: head of feed mismatch on %s: %d vs %d", authorRef.Ref(), msg.Seq(), userLogSeq.Seq()+1)
 			checkFatal(err)
 		}
-
-		// msgCount += uint(msg.Seq())
-
-		// f, err := gb.Follows(authorRef)
-		// checkFatal(err)
-
-		// if len(feeds) < 20 {
-		// 	h := gb.Hops(authorRef, 2)
-		// 	level.Info(s.info).Log("feed", authorRef.Ref(), "seq", msg.Seq(), "follows", f.Count(), "hops", h.Count())
-		// }
-		// followCnt += uint(f.Count())
 	}
 }

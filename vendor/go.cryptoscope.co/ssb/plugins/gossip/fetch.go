@@ -7,9 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/sync/errgroup"
 	"time"
 
 	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/librarian"
 	"go.cryptoscope.co/luigi"
@@ -32,47 +34,6 @@ func (e ErrWrongSequence) Error() string {
 		e.Ref.Ref(), e.Stored, e.Indexed)
 }
 
-func (h *handler) fetchAllLib(
-	ctx context.Context,
-	e muxrpc.Endpoint,
-	lst []librarian.Addr,
-) error {
-	var refs = graph.NewFeedSet(len(lst))
-	for i, addr := range lst {
-		var sr ssb.StorageRef
-		err := sr.Unmarshal([]byte(addr))
-		if err != nil {
-			return errors.Wrapf(err, "fetchLib(%d) failed to parse (%q)", i, addr)
-		}
-		if err := refs.AddStored(&sr); err != nil {
-			return errors.Wrapf(err, "fetchLib(%d) set add failed", i)
-		}
-	}
-	return h.fetchAll(ctx, e, refs)
-}
-
-func (h *handler) fetchAllMinus(
-	ctx context.Context,
-	e muxrpc.Endpoint,
-	fs *graph.StrFeedSet,
-	got []librarian.Addr,
-) error {
-	lst, err := fs.List()
-	if err != nil {
-		return err
-	}
-	var refs = graph.NewFeedSet(len(lst))
-	for _, ref := range lst {
-		if !isIn(got, ref) {
-			err := refs.AddRef(ref)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return h.fetchAll(ctx, e, refs)
-}
-
 func (h *handler) fetchAll(
 	ctx context.Context,
 	e muxrpc.Endpoint,
@@ -89,16 +50,58 @@ func (h *handler) fetchAll(
 	if err != nil {
 		return err
 	}
+	tGraph, err := h.GraphBuilder.Build()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	fetchGroup, ctx := errgroup.WithContext(ctx)
+	work := make(chan *ssb.FeedRef)
+
+	n := 1 + (len(lst) / 10)
+	const maxWorker = 50
+	if n > maxWorker { // n = max(n,maxWorker)
+		n = maxWorker
+	}
+	for i := n; i > 0; i-- {
+		fetchGroup.Go(h.makeWorker(work, ctx, e))
+	}
+
 	for _, r := range lst {
-		err := h.fetchFeed(ctx, r, e)
-		if muxrpc.IsSinkClosed(err) || errors.Cause(err) == context.Canceled {
-			return err
-		} else if err != nil {
-			// assuming forked feed for instance
-			h.Info.Log("msg", "fetchFeed stored failed", "err", err)
+		if tGraph.Blocks(h.Id, r) {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			close(work)
+			cancel()
+			fetchGroup.Wait()
+			return ctx.Err()
+		case work <- r:
 		}
 	}
-	return nil
+	close(work)
+	level.Debug(h.Info).Log("event", "feed fetch workers filled", "n", n)
+	err = fetchGroup.Wait()
+	level.Debug(h.Info).Log("event", "workers done", "err", err)
+	return err
+}
+
+func (h *handler) makeWorker(work <-chan *ssb.FeedRef, ctx context.Context, edp muxrpc.Endpoint) func() error {
+	started := time.Now()
+	return func() error {
+		for ref := range work {
+			err := h.fetchFeed(ctx, ref, edp, started)
+			if muxrpc.IsSinkClosed(err) || errors.Cause(err) == context.Canceled || errors.Cause(err) == muxrpc.ErrSessionTerminated {
+				return err
+			} else if err != nil {
+				// just logging the error assuming forked feed for instance
+				level.Warn(h.Info).Log("event", "skipped updating of stored feed", "err", err, "fr", ref.Ref()[1:5])
+			}
+		}
+		return nil
+	}
 }
 
 func isIn(list []librarian.Addr, a *ssb.FeedRef) bool {
@@ -115,6 +118,7 @@ func (g *handler) fetchFeed(
 	ctx context.Context,
 	fr *ssb.FeedRef,
 	edp muxrpc.Endpoint,
+	started time.Time,
 ) error {
 	select {
 	case <-ctx.Done():
@@ -170,28 +174,27 @@ func (g *handler) fetchFeed(
 				return errors.Wrapf(err, "failed retreive stored message")
 			}
 
-			abs, ok := msgV.(ssb.Message)
+			var ok bool
+			latestMsg, ok = msgV.(ssb.Message)
 			if !ok {
 				return errors.Errorf("fetch: wrong message type. expected %T - got %T", latestMsg, msgV)
 			}
 
-			latestMsg = abs
-
+			// make sure our house is in order
 			if hasSeq := latestMsg.Seq(); hasSeq != latestSeq.Seq() {
-				return &ErrWrongSequence{Stored: latestMsg, Indexed: latestSeq, Ref: fr}
+				return ErrWrongSequence{Stored: latestMsg, Indexed: latestSeq, Ref: fr}
 			}
 		}
 	}
 
 	startSeq := latestSeq
-	info := log.With(g.Info, "fr", fr.Ref(), "latest", startSeq) //, "me", g.Id.Ref())
+	info := log.With(g.Info, "event", "gossiprx", "fr", fr.Ref()[1:5], "latest", startSeq) // , "me", g.Id.Ref()[1:5])
 
 	var q = message.CreateHistArgs{
-		ID:         fr.Ref(),
+		ID:         fr,
 		Seq:        int64(latestSeq + 1),
 		StreamArgs: message.StreamArgs{Limit: -1},
 	}
-	start := time.Now()
 
 	toLong, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer func() {
@@ -203,7 +206,7 @@ func (g *handler) fetchFeed(
 			if g.sysCtr != nil {
 				g.sysCtr.With("event", "gossiprx").Add(float64(n))
 			}
-			info.Log("event", "gossiprx", "new", n, "took", time.Since(start))
+			level.Debug(info).Log("received", n, "took", time.Since(started))
 		}
 	}()
 

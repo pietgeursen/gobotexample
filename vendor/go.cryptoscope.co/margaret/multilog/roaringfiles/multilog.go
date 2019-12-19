@@ -18,6 +18,7 @@ import (
 	"go.cryptoscope.co/margaret/internal/persist/fs"
 	"go.cryptoscope.co/margaret/internal/persist/mkv"
 	"go.cryptoscope.co/margaret/internal/persist/sqlite"
+	"go.cryptoscope.co/margaret/multilog"
 )
 
 // New returns a new multilog that is only good to store sequences
@@ -165,6 +166,19 @@ func (log *MultiLog) CompressAll() error {
 		}
 	}
 	return nil
+}
+
+func (log *MultiLog) Delete(addr librarian.Addr) error {
+	log.l.Lock()
+	defer log.l.Unlock()
+
+	if sl, ok := log.sublogs[addr]; ok {
+		sl.deleted = true
+		sl.seq.Set(multilog.ErrSublogDeleted)
+		delete(log.sublogs, addr)
+	}
+
+	return log.store.Delete(persist.Key(addr))
 }
 
 // List returns a list of all stored sublogs

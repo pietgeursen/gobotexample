@@ -7,13 +7,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/metrics"
-
 	"github.com/cryptix/go/logging"
+	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
+	"github.com/go-kit/kit/metrics"
 	"github.com/pkg/errors"
-	"go.cryptoscope.co/librarian"
+	"go.cryptoscope.co/luigi"
 	"go.cryptoscope.co/margaret"
 	"go.cryptoscope.co/margaret/multilog"
 	"go.cryptoscope.co/muxrpc"
@@ -40,6 +39,8 @@ type handler struct {
 	sysCtr   metrics.Counter
 
 	feedManager *FeedManager
+
+	rootCtx context.Context
 }
 
 func (g *handler) HandleConnect(ctx context.Context, e muxrpc.Endpoint) {
@@ -53,7 +54,8 @@ func (g *handler) HandleConnect(ctx context.Context, e muxrpc.Endpoint) {
 		return
 	}
 
-	info := log.With(g.Info, "remote", remoteRef.Ref()[1:5])
+	info := log.With(g.Info, "remote", remoteRef.Ref()[1:5], "event", "gossiprx")
+	start := time.Now()
 
 	if g.promisc {
 		hasCallee, err := multilog.Has(g.UserFeeds, remoteRef.StoredAddr())
@@ -64,11 +66,11 @@ func (g *handler) HandleConnect(ctx context.Context, e muxrpc.Endpoint) {
 
 		if !hasCallee {
 			info.Log("handleConnect", "oops - dont have feed of remote peer. requesting...")
-			if err := g.fetchFeed(ctx, remoteRef, e); err != nil {
+			if err := g.fetchFeed(ctx, remoteRef, e, time.Now()); err != nil {
 				info.Log("handleConnect", "fetchFeed callee failed", "err", err)
 				return
 			}
-			info.Log("fetchFeed", "done callee")
+			info.Log("msg", "done fetching callee")
 		}
 	}
 
@@ -80,55 +82,17 @@ func (g *handler) HandleConnect(ctx context.Context, e muxrpc.Endpoint) {
 	default:
 	}
 
-	ufaddrs, err := g.UserFeeds.List()
-	if err != nil {
-		info.Log("handleConnect", "UserFeeds listing failed", "err", err)
-		return
-	}
-
-	tGraph, err := g.GraphBuilder.Build()
-	if err != nil {
-		info.Log("handleConnect", "fetchFeed follows listing", "err", err)
-		return
-	}
-
-	// TODO: port Blocked to FeedSet and make set operations
-	var blockedAddr []librarian.Addr
-	blocked := tGraph.BlockedList(g.Id)
-	for _, ref := range ufaddrs {
-		if _, isBlocked := blocked[ref]; isBlocked {
-			level.Warn(info).Log("msg", "blocked feed still stored")
-			blockedAddr = append(blockedAddr, ref)
-		}
-	}
-
 	hops := g.GraphBuilder.Hops(g.Id, g.hopCount)
 	if hops != nil {
-		err := g.fetchAllMinus(ctx, e, hops, append(ufaddrs, blockedAddr...))
+		err := g.fetchAll(ctx, e, hops)
 		if muxrpc.IsSinkClosed(err) || errors.Cause(err) == context.Canceled {
 			return
 		}
 		if err != nil {
-			level.Error(info).Log("fetching", "hops failed", "err", err)
+			level.Error(info).Log("msg", "hops failed", "err", err)
 		}
 	}
-
-	err = g.fetchAllLib(ctx, e, ufaddrs)
-	if muxrpc.IsSinkClosed(err) || errors.Cause(err) == context.Canceled {
-		return
-	}
-	if err != nil {
-		level.Error(info).Log("fetching", "stored failed", "err", err)
-	} else {
-		info.Log("msg", "fetch done", "hops", hops.Count(), "stored", len(ufaddrs))
-	}
-
-}
-
-func (g *handler) check(err error) {
-	if err != nil {
-		g.Info.Log("error", err)
-	}
+	level.Debug(info).Log("msg", "hops fetch done", "count", hops.Count(), "took", time.Since(start))
 }
 
 func (g *handler) HandleCall(
@@ -140,13 +104,17 @@ func (g *handler) HandleCall(
 		req.Type = "async"
 	}
 
+	hlog := log.With(g.Info, "event", "gossiptx")
+	errLog := level.Error(hlog)
+	dbgLog := level.Debug(hlog)
+
 	closeIfErr := func(err error) {
-		g.check(err)
 		if err != nil {
+			errLog.Log("err", err)
 			req.Stream.CloseWithError(err)
-		} else {
-			req.Stream.Close()
+			return
 		}
+		req.Stream.Close()
 	}
 
 	switch req.Method.String() {
@@ -174,9 +142,66 @@ func (g *handler) HandleCall(
 			closeIfErr(errors.Wrap(err, "bad request"))
 			return
 		}
+
+		remote, err := ssb.GetFeedRefFromAddr(edp.Remote())
+		if err != nil {
+			closeIfErr(errors.Wrap(err, "bad remote"))
+			return
+		}
+
+		// hlog = log.With(hlog, "fr", query.ID.Ref()[1:5], "remote", remote.Ref()[1:5])
+		// dbgLog = level.Warn(hlog)
+
+		// skip this check for self/master or in promisc mode (talk to everyone)
+		if !(g.Id.Equal(remote) || g.promisc) {
+			tg, err := g.GraphBuilder.Build()
+			if err != nil {
+				closeIfErr(errors.Wrap(err, "internal error"))
+				return
+			}
+
+			if tg.Blocks(query.ID, remote) {
+				dbgLog.Log("msg", "feed blocked")
+				req.Stream.Close()
+				return
+			}
+
+			// TODO: write proper tests for this
+			// // see if there is a path from the wanted feed
+			// l, err := tg.MakeDijkstra(query.ID)
+			// if err != nil {
+			// 	if _, ok := errors.Cause(err).(graph.ErrNoSuchFrom); ok {
+			// 		dbgLog.Log("msg", "unknown remote")
+			// 		req.Stream.Close()
+			// 		return
+			// 	}
+			// 	closeIfErr(errors.Wrap(err, "graph dist lookup failed"))
+			// 	return
+			// }
+
+			// // to the remote requesting it
+			// path, dist := l.Dist(remote)
+			// if len(path) < 1 || len(path) > 4 {
+			// 	dbgLog.Log("msg", "requested feed doesnt know remote", "d", dist, "plen", len(path))
+			// 	req.Stream.Close()
+			// 	return
+			// }
+			// now we know that at least someone they know, knows the remote
+
+			// dbgLog.Log("msg", "feeds in range", "d", dist, "plen", len(path))
+			// } else {
+			// dbgLog.Log("msg", "feed access granted")
+		}
+
 		err = g.feedManager.CreateStreamHistory(ctx, req.Stream, query)
 		if err != nil {
-			req.Stream.CloseWithError(errors.Wrap(err, "createHistoryStream failed"))
+			if luigi.IsEOS(err) {
+				req.Stream.Close()
+				return
+			}
+			err = errors.Wrap(err, "createHistoryStream failed")
+			level.Error(hlog).Log("err", err)
+			req.Stream.CloseWithError(err)
 			return
 		}
 		// don't close stream (feedManager will pass it on to live processing or close it itself)
@@ -191,6 +216,6 @@ func (g *handler) HandleCall(
 		// some versions of ssb-gossip don't like if the stream is closed without an error
 
 	default:
-		closeIfErr(errors.Errorf("unknown command: %s", req.Method))
+		closeIfErr(errors.Errorf("unknown command: %q", req.Method.String()))
 	}
 }

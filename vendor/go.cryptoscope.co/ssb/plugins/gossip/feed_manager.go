@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/cryptix/go/logging"
+	"github.com/go-kit/kit/log/level"
 	"github.com/go-kit/kit/metrics"
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/librarian"
@@ -24,6 +25,8 @@ import (
 
 // FeedManager handles serving gossip about User Feeds.
 type FeedManager struct {
+	rootCtx context.Context
+
 	RootLog   margaret.Log
 	UserFeeds multilog.MultiLog
 	logger    logging.Interface
@@ -39,6 +42,7 @@ type FeedManager struct {
 // NewFeedManager returns a new FeedManager used for gossiping about User
 // Feeds.
 func NewFeedManager(
+	ctx context.Context,
 	rootLog margaret.Log,
 	userFeeds multilog.MultiLog,
 	info logging.Interface,
@@ -49,6 +53,7 @@ func NewFeedManager(
 		RootLog:   rootLog,
 		UserFeeds: userFeeds,
 		logger:    info,
+		rootCtx:   ctx,
 		sysCtr:    sysCtr,
 		sysGauge:  sysGauge,
 		liveFeeds: make(map[string]*multiSink),
@@ -63,10 +68,10 @@ func (m *FeedManager) pour(ctx context.Context, val interface{}, err error) erro
 	defer m.liveFeedsMut.Unlock()
 
 	if err != nil {
-		m.logger.Log("pourErr", err)
 		if luigi.IsEOS(err) {
 			return nil
 		}
+		level.Error(m.logger).Log("event", "pour failed", "err", err)
 		return err
 	}
 
@@ -94,9 +99,8 @@ func (m *FeedManager) serveLiveFeeds() {
 		panic(err)
 	}
 
-	ctx := context.TODO()
-	err = luigi.Pump(ctx, luigi.FuncSink(m.pour), src)
-	if err != nil {
+	err = luigi.Pump(m.rootCtx, luigi.FuncSink(m.pour), src)
+	if err != nil && err != ssb.ErrShuttingDown {
 		err = errors.Wrap(err, "error while serving live feed")
 		panic(err)
 	}
@@ -194,13 +198,8 @@ func (m *FeedManager) CreateStreamHistory(
 	sink luigi.Sink,
 	arg *message.CreateHistArgs,
 ) error {
-	feedRef, err := ssb.ParseFeedRef(arg.ID)
-	if err != nil {
-		return err // only handle valid feed refs
-	}
-
 	// check what we got
-	userLog, err := m.UserFeeds.Get(feedRef.StoredAddr())
+	userLog, err := m.UserFeeds.Get(arg.ID.StoredAddr())
 	if err != nil {
 		return errors.Wrapf(err, "failed to open sublog for user")
 	}
@@ -231,18 +230,14 @@ func (m *FeedManager) CreateStreamHistory(
 		return errors.Wrapf(err, "invalid user log query")
 	}
 
-	switch feedRef.Algo {
+	switch arg.ID.Algo {
 	case ssb.RefAlgoFeedSSB1:
 		sink = transform.NewKeyValueWrapper(sink, arg.Keys)
 
 	case ssb.RefAlgoFeedGabby:
 		switch {
-		// case arg.AsJSON && !arg.Keys:
-		// 	sink = asJSONsink(sink)
-
 		case arg.AsJSON:
 			sink = transform.NewKeyValueWrapper(sink, arg.Keys)
-
 		default:
 			sink = gabbyStreamSink(sink)
 		}
@@ -256,7 +251,7 @@ func (m *FeedManager) CreateStreamHistory(
 		m.sysCtr.With("event", "gossiptx").Add(float64(sent))
 	} else {
 		if sent > 0 {
-			m.logger.Log("event", "gossiptx", "n", sent)
+			level.Debug(m.logger).Log("event", "gossiptx", "n", sent, "fr", arg.ID.Ref()[1:5])
 		}
 	}
 	if errors.Cause(err) == context.Canceled {

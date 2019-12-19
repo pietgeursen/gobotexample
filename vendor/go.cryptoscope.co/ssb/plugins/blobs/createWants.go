@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/cryptix/go/logging"
+	"github.com/go-kit/kit/log/level"
 	"github.com/pkg/errors"
 
 	"go.cryptoscope.co/luigi"
@@ -17,8 +18,11 @@ import (
 
 type createWantsHandler struct {
 	log logging.Interface
-	bs  ssb.BlobStore
-	wm  ssb.WantManager
+
+	self ssb.FeedRef
+
+	bs ssb.BlobStore
+	wm ssb.WantManager
 
 	// sources is a map if sources where the responses are read from.
 	sources map[string]luigi.Source
@@ -48,17 +52,24 @@ func (h *createWantsHandler) getSource(ctx context.Context, edp muxrpc.Endpoint)
 		return nil, errors.Wrap(err, "error making source call")
 	}
 	if src == nil {
-		h.log.Log("msg", "got a nil source edp.Source, returning an error")
-		return nil, errors.New("could not make createWants call")
+		return nil, errors.New("failed to get createWants source from remote")
 	}
 	h.sources[ref] = src
 	return src, nil
 }
 
 func (h *createWantsHandler) HandleConnect(ctx context.Context, edp muxrpc.Endpoint) {
-	_, err := h.getSource(ctx, edp)
+	ref, err := ssb.GetFeedRefFromAddr(edp.Remote())
 	if err != nil {
-		h.log.Log("method", "blobs.createWants", "handler", "onConnect", "getSourceErr", err)
+		return
+	}
+	if ref.Equal(&h.self) {
+		return
+	}
+
+	_, err = h.getSource(ctx, edp)
+	if err != nil && !muxrpc.IsSinkClosed(err) {
+		level.Warn(h.log).Log("method", "blobs.createWants", "handler", "onConnect", "getSourceErr", err)
 		return
 	}
 }
@@ -66,14 +77,18 @@ func (h *createWantsHandler) HandleConnect(ctx context.Context, edp muxrpc.Endpo
 func (h *createWantsHandler) HandleCall(ctx context.Context, req *muxrpc.Request, edp muxrpc.Endpoint) {
 	src, err := h.getSource(ctx, edp)
 	if err != nil {
-		h.log.Log("event", "onCall", "handler", "createWants", "getSourceErr", err)
+		level.Debug(h.log).Log("event", "onCall", "handler", "createWants", "getSourceErr", err)
 		req.Stream.CloseWithError(errors.Wrap(err, "failed to get source"))
 		return
 	}
 	snk := h.wm.CreateWants(ctx, req.Stream, edp)
+	if snk == nil {
+		return
+	}
+
 	err = luigi.Pump(ctx, snk, src)
 	if err != nil && !muxrpc.IsSinkClosed(err) {
-		h.log.Log("event", "onCall", "handler", "createWants", "pumpErr", err)
+		level.Debug(h.log).Log("event", "onCall", "handler", "createWants", "err", err)
 	}
 
 	h.l.Lock()

@@ -7,6 +7,8 @@ import (
 	"net"
 	"time"
 
+	"github.com/go-kit/kit/log/level"
+
 	kitlog "github.com/go-kit/kit/log"
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/librarian"
@@ -36,22 +38,36 @@ import (
 )
 
 func (s *Sbot) Close() error {
-	// TODO: if already closed?
-	if s.Network != nil {
-		s.Network.GetConnTracker().CloseAll()
+	s.closedMu.Lock()
+	defer s.closedMu.Unlock()
+
+	if s.closed {
+		return s.closeErr
 	}
-	s.info.Log("event", "closing", "msg", "sbot close waiting for idxes")
+
+	closeEvt := kitlog.With(s.info, "event", "sbot closing")
+	s.closed = true
+
+	if s.Network != nil {
+		if err := s.Network.Close(); err != nil {
+			s.closeErr = errors.Wrap(err, "sbot: failed to close own network node")
+			return s.closeErr
+		}
+		s.Network.GetConnTracker().CloseAll()
+		level.Debug(closeEvt).Log("msg", "connections closed")
+	}
 
 	if err := s.idxDone.Wait(); err != nil {
-		return errors.Wrap(err, "sbot: index group failed")
+		s.closeErr = errors.Wrap(err, "sbot: index group shutdown failed")
+		return s.closeErr
 	}
-	// TODO: timeout?
-	s.info.Log("event", "closing", "msg", "waited")
+	level.Debug(closeEvt).Log("msg", "waited for indexes to close")
 
 	if err := s.closers.Close(); err != nil {
-		return err
+		s.closeErr = err
+		return s.closeErr
 	}
-	s.info.Log("event", "closing", "msg", "closers closed")
+	level.Info(closeEvt).Log("msg", "closers closed")
 	return nil
 }
 
@@ -79,15 +95,17 @@ func initSbot(s *Sbot) (*Sbot, error) {
 	// s.serveIndex(ctx, "abouts", serveAbouts)
 	// s.AboutStore = ab
 
-	bs, err := repo.OpenBlobStore(r)
-	if err != nil {
-		return nil, errors.Wrap(err, "sbot: failed to open blob store")
+	if s.BlobStore == nil { // load default, local file blob store
+		s.BlobStore, err = repo.OpenBlobStore(r)
+		if err != nil {
+			return nil, errors.Wrap(err, "sbot: failed to open blob store")
+		}
 	}
-	s.BlobStore = bs
+
 	// TODO: add flag to filter specific levels and/or units and pass nop to the others
 	wantsLog := kitlog.With(log, "module", "WantManager")
 	// wantsLog := kitlog.NewNopLogger()
-	wm := blobstore.NewWantManager(wantsLog, bs, s.eventCounter, s.systemGauge)
+	wm := blobstore.NewWantManager(wantsLog, s.BlobStore, s.eventCounter, s.systemGauge)
 	s.WantManager = wm
 
 	for _, opt := range s.lateInit {
@@ -97,16 +115,28 @@ func initSbot(s *Sbot) (*Sbot, error) {
 		}
 	}
 
-	uf, ok := s.mlogIndicies["userFeeds"]
+	uf, ok := s.mlogIndicies[multilogs.IndexNameFeeds]
 	if !ok {
-		log.Log("warning", "loading default idx", "idx", "userFeeds")
-		err = MountMultiLog("userFeeds", multilogs.OpenUserFeeds)(s)
+		level.Warn(s.info).Log("event", "bot init", "msg", "loading default idx", "idx", multilogs.IndexNameFeeds)
+		err = MountMultiLog(multilogs.IndexNameFeeds, multilogs.OpenUserFeeds)(s)
 		if err != nil {
 			return nil, errors.Wrap(err, "sbot: failed to open userFeeds index")
 		}
-		uf, ok = s.mlogIndicies["userFeeds"]
+		uf, ok = s.mlogIndicies[multilogs.IndexNameFeeds]
 		if !ok {
-			return nil, errors.Errorf("sbot: failed to open userFeeds index")
+			return nil, errors.Errorf("sbot: failed get loaded default index")
+		}
+	}
+
+	if _, ok := s.simpleIndex["content-delete-requests"]; !ok {
+		var dcrTrigger dropContentTrigger
+		dcrTrigger.logger = kitlog.With(log, "module", "dcrTrigger")
+		dcrTrigger.root = s.RootLog
+		dcrTrigger.feeds = uf
+		dcrTrigger.nuller = s
+		err = MountSimpleIndex("content-delete-requests", dcrTrigger.MakeSimpleIndex)(s)
+		if err != nil {
+			return nil, errors.Wrap(err, "sbot: failed to open load default DCR index")
 		}
 	}
 
@@ -123,7 +153,7 @@ func initSbot(s *Sbot) (*Sbot, error) {
 
 	// LogBuilder doesn't fully work yet
 	if mt, ok := s.mlogIndicies["msgTypes"]; ok {
-		s.info.Log("warning", "using experimental bytype:contact graph implementation")
+		level.Warn(s.info).Log("event", "bot init", "msg", "using experimental bytype:contact graph implementation")
 		contactLog, err := mt.Get(librarian.Addr("contact"))
 		if err != nil {
 			return nil, errors.Wrap(err, "sbot: failed to open message contact sublog")
@@ -147,7 +177,7 @@ func initSbot(s *Sbot) (*Sbot, error) {
 
 	// TODO: make plugabble
 	// var peerPlug *peerinvites.Plugin
-	// if mt, ok := s.mlogIndicies["userFeeds"]; ok {
+	// if mt, ok := s.mlogIndicies[multilogs.IndexNameFeeds]; ok {
 	// 	peerPlug = peerinvites.New(kitlog.With(log, "plugin", "peerInvites"), s, mt, s.RootLog, s.PublishLog)
 	// 	s.public.Register(peerPlug)
 	// 	_, peerServ, err := peerPlug.OpenIndex(r)
@@ -157,8 +187,16 @@ func initSbot(s *Sbot) (*Sbot, error) {
 	// 	s.serveIndex(ctx, "contacts", peerServ)
 	// }
 
-	auth := s.GraphBuilder.Authorizer(s.KeyPair.Id, int(s.hopCount))
+	auth := s.GraphBuilder.Authorizer(s.KeyPair.Id, int(s.hopCount+2))
 	mkHandler := func(conn net.Conn) (muxrpc.Handler, error) {
+		// bypassing badger-close bug to go through with an accept (or not) before closing the bot
+		s.closedMu.Lock()
+		defer s.closedMu.Unlock()
+
+		if s.Network.Closed() {
+			conn.Close()
+			return nil, errors.New("sbot: network closed")
+		}
 		remote, err := ssb.GetFeedRefFromAddr(conn.RemoteAddr())
 		if err != nil {
 			return nil, errors.Wrap(err, "sbot: expected an address containing an shs-bs addr")
@@ -188,9 +226,11 @@ func initSbot(s *Sbot) (*Sbot, error) {
 		}
 
 		// shit - don't see a way to pass being a different feedtype with shs1
+		// we also need to pass this up the stack...!
 		remote.Algo = ssb.RefAlgoFeedGabby
 		err = auth.Authorize(remote)
 		if err == nil {
+			level.Debug(log).Log("warn", "found gg feed, using that")
 			return s.public.MakeHandler(conn)
 		}
 		return nil, err
@@ -212,7 +252,7 @@ func initSbot(s *Sbot) (*Sbot, error) {
 	s.master.Register(whoami)
 
 	// blobs
-	blobs := blobs.New(kitlog.With(log, "plugin", "blobs"), bs, wm)
+	blobs := blobs.New(kitlog.With(log, "plugin", "blobs"), *s.KeyPair.Id, s.BlobStore, wm)
 	s.public.Register(blobs)
 	s.master.Register(blobs) // TODO: does not need to open a createWants on this one?!
 
@@ -237,13 +277,13 @@ func initSbot(s *Sbot) (*Sbot, error) {
 		copy(k[:], s.signHMACsecret)
 		histOpts = append(histOpts, gossip.HMACSecret(&k))
 	}
-	s.public.Register(gossip.New(
+	s.public.Register(gossip.New(ctx,
 		kitlog.With(log, "plugin", "gossip"),
 		s.KeyPair.Id, s.RootLog, uf, s.GraphBuilder,
 		histOpts...))
 
 	// incoming createHistoryStream handler
-	hist := gossip.NewHist(
+	hist := gossip.NewHist(ctx,
 		kitlog.With(log, "plugin", "gossip/hist"),
 		s.KeyPair.Id, s.RootLog, uf, s.GraphBuilder,
 		histOpts...)
@@ -267,6 +307,7 @@ func initSbot(s *Sbot) (*Sbot, error) {
 		KeyPair:             s.KeyPair,
 		AppKey:              s.appKey[:],
 		MakeHandler:         mkHandler,
+		ConnTracker:         s.networkConnTracker,
 		BefreCryptoWrappers: s.preSecureWrappers,
 		AfterSecureWrappers: s.postSecureWrappers,
 
@@ -280,7 +321,6 @@ func initSbot(s *Sbot) (*Sbot, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create network node")
 	}
-	s.closers.addCloser(s.Network)
 
 	// TODO: should be gossip.connect but conflicts with our namespace assumption
 	s.master.Register(control.NewPlug(kitlog.With(log, "plugin", "ctrl"), s.Network))

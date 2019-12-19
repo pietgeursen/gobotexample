@@ -21,6 +21,13 @@ type Graph struct {
 	lookup key2node
 }
 
+func NewGraph() *Graph {
+	return &Graph{
+		WeightedDirectedGraph: simple.NewWeightedDirectedGraph(0, math.Inf(1)),
+		lookup:                make(key2node),
+	}
+}
+
 func (g *Graph) getEdge(from, to *ssb.FeedRef) (graph.WeightedEdge, bool) {
 	g.Mutex.Lock()
 	defer g.Mutex.Unlock()
@@ -52,24 +59,25 @@ func (g *Graph) Blocks(from, to *ssb.FeedRef) bool {
 	if !has {
 		return false
 	}
-	return w.Weight() == math.Inf(1)
+	return math.IsInf(w.Weight(), 1)
 }
 
-func (g *Graph) BlockedList(from *ssb.FeedRef) map[librarian.Addr]bool {
+func (g *Graph) BlockedList(from *ssb.FeedRef) map[librarian.Addr]struct{} {
 	g.Mutex.Lock()
 	defer g.Mutex.Unlock()
 	nFrom, has := g.lookup[from.StoredAddr()]
 	if !has {
 		return nil
 	}
-	blocked := make(map[librarian.Addr]bool)
+	blocked := make(map[librarian.Addr]struct{})
 	edgs := g.From(nFrom.ID())
 	for edgs.Next() {
-		edg := g.Edge(nFrom.ID(), edgs.Node().ID()).(contactEdge)
+		nTo := edgs.Node()
+		edg := g.Edge(nFrom.ID(), nTo.ID()).(contactEdge)
 
-		if edg.Weight() == math.Inf(1) {
-			ctNode := edg.To().(*contactNode)
-			blocked[ctNode.feed.StoredAddr()] = true
+		if math.IsInf(edg.Weight(), 1) {
+			ctNode := nTo.(*contactNode)
+			blocked[ctNode.feed.StoredAddr()] = struct{}{}
 		}
 	}
 	return blocked
@@ -80,7 +88,7 @@ func (g *Graph) MakeDijkstra(from *ssb.FeedRef) (*Lookup, error) {
 	defer g.Mutex.Unlock()
 	nFrom, has := g.lookup[from.StoredAddr()]
 	if !has {
-		return nil, &ErrNoSuchFrom{from}
+		return nil, ErrNoSuchFrom{Who: from}
 	}
 	return &Lookup{
 		path.DijkstraFrom(nFrom, g),

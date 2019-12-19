@@ -4,7 +4,6 @@ package sbot
 
 import (
 	"context"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -22,32 +21,16 @@ import (
 )
 
 // NullFeed overwrites all the entries from ref in repo with zeros
-func NullFeed(r repo.Interface, ref *ssb.FeedRef) error {
+func (s *Sbot) NullFeed(ref *ssb.FeedRef) error {
 	ctx := context.Background()
 
-	uf, _, err := multilogs.OpenUserFeeds(r)
-	if err != nil {
-		err = errors.Wrap(err, "NullFeed: failed to open multilog")
-		return err
-	}
-	defer uf.Close()
-
-	rootLog, err := repo.OpenLog(r)
-	if err != nil {
-		err = errors.Wrap(err, "NullFeed: root-log open failed")
-		return err
-	}
-	if c, ok := rootLog.(io.Closer); ok {
-		defer c.Close()
-	}
-
-	alterLog, ok := rootLog.(margaret.Alterer)
+	uf, ok := s.GetMultiLog(multilogs.IndexNameFeeds)
 	if !ok {
-		err = errors.Errorf("NullFeed: not an alterer: %T", rootLog)
-		return err
+		return errors.Errorf("NullFeed: failed to open multilog")
 	}
 
-	userSeqs, err := uf.Get(ref.StoredAddr())
+	feedAddr := ref.StoredAddr()
+	userSeqs, err := uf.Get(feedAddr)
 	if err != nil {
 		err = errors.Wrap(err, "NullFeed: failed to open log for feed argument")
 		return err
@@ -67,16 +50,28 @@ func NullFeed(r repo.Interface, ref *ssb.FeedRef) error {
 		}
 		seq, ok := v.(margaret.Seq)
 		if !ok {
-			return errors.Errorf("")
+			return errors.Errorf("NullFeed: not a sequenc from userlog query")
 		}
-		return alterLog.Null(seq)
+		return s.RootLog.Null(seq)
 	})
 	err = luigi.Pump(ctx, snk, src)
 	if err != nil {
-		err = errors.Wrapf(err, "failed to pump entries and null them %d", i)
+		err = errors.Wrapf(err, "NullFeed: failed to pump entries and null them %d", i)
 		return err
 	}
-	log.Printf("\ndropped %d entries", i)
+
+	err = uf.Delete(feedAddr)
+	if err != nil {
+		err = errors.Wrapf(err, "NullFeed: error while deleting feed from userFeeds index")
+		return err
+	}
+
+	err = s.GraphBuilder.DeleteAuthor(ref)
+	if err != nil {
+		err = errors.Wrapf(err, "NullFeed: error while deleting feed from graph index")
+		return err
+	}
+
 	return nil
 }
 

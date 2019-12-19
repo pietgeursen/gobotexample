@@ -31,8 +31,7 @@ func NewPacker(rwc io.ReadWriteCloser) Packer {
 		w: codec.NewWriter(rwc),
 		c: rwc,
 
-		closing:  make(chan struct{}),
-		closeLis: make([]chan struct{}, 0),
+		closing: make(chan struct{}),
 	}
 }
 
@@ -49,21 +48,6 @@ type packer struct {
 	closeErr  error
 	closeOnce sync.Once
 	closing   chan struct{}
-	closeLis  []chan struct{}
-}
-
-type CloseNotifier interface {
-	// Closed returns a channel that is closed once the packer has to stop operating
-	// this allows other parts of the stack to see when the the packer stopped working
-	Closed() <-chan struct{}
-}
-
-func (pkr *packer) Closed() <-chan struct{} {
-	pkr.cl.Lock()
-	defer pkr.cl.Unlock()
-	ch := make(chan struct{})
-	pkr.closeLis = append(pkr.closeLis, ch)
-	return ch
 }
 
 // Next returns the next packet from the underlying stream.
@@ -130,6 +114,15 @@ func IsSinkClosed(err error) bool {
 	if causeErr == errSinkClosed {
 		return true
 	}
+
+	if causeErr == ErrSessionTerminated {
+		return true
+	}
+
+	if isAlreadyClosed(err) {
+		return true
+	}
+
 	return false
 }
 
@@ -178,10 +171,6 @@ func (pkr *packer) Close() error {
 	var err error
 
 	pkr.closeOnce.Do(func() {
-		for _, ch := range pkr.closeLis {
-			close(ch)
-		}
-		pkr.closeLis = nil
 		err = pkr.c.Close()
 		close(pkr.closing)
 	})

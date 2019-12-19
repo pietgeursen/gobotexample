@@ -2,6 +2,7 @@ package gabbygrove
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log"
@@ -203,6 +204,9 @@ func (tr *Transfer) ContentBytes() []byte {
 	return tr.Content
 }
 
+// ValueContent returns a ssb.Value that can be represented as JSON.
+// Note that it's signature is useless for verification in this form.
+// Get the whole transfer message and use tr.Verify()
 func (tr *Transfer) ValueContent() *ssb.Value {
 	evt, err := tr.getEvent()
 	if err != nil {
@@ -223,9 +227,18 @@ func (tr *Transfer) ValueContent() *ssb.Value {
 	msg.Author = *aref.(*ssb.FeedRef)
 	msg.Sequence = margaret.BaseSeq(evt.Sequence)
 	msg.Hash = "gabbygrove-v1"
+	msg.Signature = base64.StdEncoding.EncodeToString(tr.Signature) + ".cbor.sig.ed25519"
 	msg.Timestamp = encodedTime.Millisecs(tr.Claimed())
-	msg.Content = tr.Content
-	msg.Signature = "invalid - mapped JSON message from CBOR"
+	switch evt.Content.Type {
+	case ContentTypeArbitrary:
+		v, err := json.Marshal(tr.Content)
+		if err != nil {
+			panic(err)
+		}
+		msg.Content = json.RawMessage(v)
+	case ContentTypeJSON:
+		msg.Content = json.RawMessage(tr.Content)
+	}
 	return &msg
 }
 

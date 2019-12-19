@@ -10,21 +10,22 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/cryptix/go/logging"
-	"golang.org/x/sync/errgroup"
-
 	kitlog "github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/metrics"
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/librarian"
-	"go.cryptoscope.co/margaret"
 	"go.cryptoscope.co/margaret/multilog"
 	"go.cryptoscope.co/muxrpc"
 	"go.cryptoscope.co/netwrap"
+	"golang.org/x/sync/errgroup"
 
 	"go.cryptoscope.co/ssb"
 	"go.cryptoscope.co/ssb/graph"
+	"go.cryptoscope.co/ssb/internal/netwraputil"
+	"go.cryptoscope.co/ssb/message/multimsg"
 	"go.cryptoscope.co/ssb/network"
 	"go.cryptoscope.co/ssb/repo"
 )
@@ -44,17 +45,21 @@ type Sbot struct {
 	closers  multiCloser
 	idxDone  errgroup.Group
 
+	closed   bool
+	closedMu sync.Mutex
+	closeErr error
+
 	promisc  bool
 	hopCount uint
 
-	// these should all be options that are applied on the network construction...
-	Network        ssb.Network
-	disableNetwork bool
-	appKey         []byte
-	listenAddr     net.Addr
-	dialer         netwrap.Dialer
-	edpWrapper     MuxrpcEndpointWrapper
-
+	// TODO: these should all be options that are applied on the network construction...
+	Network            ssb.Network
+	disableNetwork     bool
+	appKey             []byte
+	listenAddr         net.Addr
+	dialer             netwrap.Dialer
+	edpWrapper         MuxrpcEndpointWrapper
+	networkConnTracker ssb.ConnTracker
 	preSecureWrappers  []netwrap.ConnWrapper
 	postSecureWrappers []netwrap.ConnWrapper
 
@@ -66,7 +71,7 @@ type Sbot struct {
 
 	repoPath         string
 	KeyPair          *ssb.KeyPair
-	RootLog          margaret.Log
+	RootLog          multimsg.AlterableLog
 	liveIndexUpdates bool
 
 	PublishLog     ssb.Publisher
@@ -87,6 +92,13 @@ type Sbot struct {
 }
 
 type Option func(*Sbot) error
+
+func WithBlobStore(bs ssb.BlobStore) Option {
+	return func(s *Sbot) error {
+		s.BlobStore = bs
+		return nil
+	}
+}
 
 // DisableLiveIndexMode makes the update processing halt once it reaches the end of the rootLog
 // makes it easier to rebuild indicies.
@@ -126,8 +138,22 @@ func WithDialer(dial netwrap.Dialer) Option {
 	}
 }
 
+func WithNetworkConnTracker(ct ssb.ConnTracker) Option {
+	return func(s *Sbot) error {
+		s.networkConnTracker = ct
+		return nil
+	}
+}
+
 func WithUNIXSocket() Option {
 	return func(s *Sbot) error {
+		// this races because sbot might not be done with init yet
+		// TODO: refactor network peer code and make unixsock implement that (those will be inited late anyway)
+		if s.KeyPair == nil {
+			return errors.Errorf("sbot/unixsock: keypair is nil. please use unixSocket with LateOption")
+		}
+		spoofWrapper := netwraputil.SpoofRemoteAddress(s.KeyPair.Id.ID)
+
 		r := repo.New(s.repoPath)
 		sockPath := r.GetPath("socket")
 
@@ -147,10 +173,6 @@ func WithUNIXSocket() Option {
 		s.closers.addCloser(uxLis)
 
 		go func() {
-			// time.Sleep(5 * time.Second)
-			// var selfAddr secretstream.Addr
-			// selfAddr.PubKey = make([]byte, 32)
-			// copy(selfAddr.PubKey, s.KeyPair.Id.ID)
 
 			for {
 				c, err := uxLis.Accept()
@@ -167,13 +189,15 @@ func WithUNIXSocket() Option {
 					continue
 				}
 
+				wc, err := spoofWrapper(c)
+				if err != nil {
+					c.Close()
+					continue
+				}
 				go func(conn net.Conn) {
 					defer conn.Close()
 
 					pkr := muxrpc.NewPacker(conn)
-
-					// TODO: fix address spoofing in handlers
-					// sameAs := netwrap.WrapAddr(conn.RemoteAddr(), selfAddr)
 
 					h, err := s.master.MakeHandler(conn)
 					if err != nil {
@@ -183,15 +207,16 @@ func WithUNIXSocket() Option {
 						return
 					}
 
-					edp := muxrpc.HandleWithLogger(pkr, h, kitlog.With(s.info, "unix", conn.LocalAddr().String()))
+					edp := muxrpc.HandleWithLogger(pkr, h, s.info)
 
+					ctx, cancel := context.WithCancel(s.rootCtx)
 					srv := edp.(muxrpc.Server)
-					if err := srv.Serve(s.rootCtx); err != nil {
+					if err := srv.Serve(ctx); err != nil {
 						s.info.Log("conn", "serve exited", "err", err, "peer", conn.RemoteAddr())
 					}
 					edp.Terminate()
-
-				}(c)
+					cancel()
+				}(wc)
 			}
 		}()
 		return nil

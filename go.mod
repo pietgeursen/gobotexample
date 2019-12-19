@@ -10,10 +10,10 @@ require (
 	github.com/pkg/errors v0.8.1
 	github.com/stretchr/testify v1.4.0
 	go.cryptoscope.co/luigi v0.3.5-0.20190924074117-8ca146aad481
-	go.cryptoscope.co/margaret v0.0.12-0.20191015084618-03ad79a9a24a
-	go.cryptoscope.co/netwrap v0.1.0
+	go.cryptoscope.co/margaret v0.1.1-0.20191128192726-25be9c098bc9
+	go.cryptoscope.co/netwrap v0.1.1
 	go.cryptoscope.co/secretstream v1.2.1
-	go.cryptoscope.co/ssb v0.0.0-20191015090058-908143fdc445
+	go.cryptoscope.co/ssb v0.0.0-20191218210832-9339f67aa758
 )
 
 exclude modernc.org/fileutil v1.1.0
