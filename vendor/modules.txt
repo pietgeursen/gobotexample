@@ -99,7 +99,7 @@ go.cryptoscope.co/secretstream
 go.cryptoscope.co/secretstream/boxstream
 go.cryptoscope.co/secretstream/internal/lo25519
 go.cryptoscope.co/secretstream/secrethandshake
-# go.cryptoscope.co/ssb v0.0.0-20191218210832-9339f67aa758
+# go.cryptoscope.co/ssb v0.0.0-20191222231253-a44792d82730
 go.cryptoscope.co/ssb
 go.cryptoscope.co/ssb/blobstore
 go.cryptoscope.co/ssb/graph
@@ -195,7 +195,7 @@ gonum.org/v1/gonum/lapack/lapack64
 gonum.org/v1/gonum/mat
 # gopkg.in/yaml.v2 v2.2.2
 gopkg.in/yaml.v2
-# modernc.org/fileutil v1.0.1-0.20191218210630-be89d16144d3
+# modernc.org/fileutil v1.0.1-0.20191220121946-b2535a37172b
 modernc.org/fileutil
 # modernc.org/internal v1.0.0
 modernc.org/internal/buffer

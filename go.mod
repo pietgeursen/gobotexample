@@ -13,7 +13,5 @@ require (
 	go.cryptoscope.co/margaret v0.1.1-0.20191128192726-25be9c098bc9
 	go.cryptoscope.co/netwrap v0.1.1
 	go.cryptoscope.co/secretstream v1.2.1
-	go.cryptoscope.co/ssb v0.0.0-20191218210832-9339f67aa758
+	go.cryptoscope.co/ssb v0.0.0-20191222231253-a44792d82730
 )
-
-exclude modernc.org/fileutil v1.1.0
