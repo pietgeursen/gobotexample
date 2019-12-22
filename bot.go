@@ -45,6 +45,8 @@ var (
 
 	runningLock sync.Mutex
 	theBot      *mksbot.Sbot
+
+	httpBlobsLisener net.Listener
 )
 
 func checkAndLog(err error) {
@@ -245,6 +247,7 @@ func Peers() ([]byte, error) {
 
 func Stop() error {
 	theBot.Shutdown()
+	httpBlobsLisener.Close()
 	return theBot.Close()
 }
 
@@ -282,7 +285,7 @@ func Start(repoPath string) {
 
 	// open listener first (so we can error out if the port is taken)
 	// TODO: could maybe be localhost?
-	lis, err := net.Listen("tcp", "0.0.0.0:8091")
+	httpBlobsLisener, err = net.Listen("tcp", "0.0.0.0:8091")
 	checkFatal(errors.Wrap(err, "blobsServ listen failed"))
 
 	go func() {
@@ -354,7 +357,7 @@ func Start(repoPath string) {
 			io.Copy(w, blobReader)
 		})
 
-		http.Serve(lis, r)
+		http.Serve(httpBlobsLisener, r)
 	}()
 
 	go func() {
