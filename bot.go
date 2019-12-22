@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cryptix/go/logging"
+	"github.com/go-kit/kit/log/level"
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/luigi"
@@ -24,6 +26,7 @@ import (
 	"go.cryptoscope.co/secretstream"
 
 	"go.cryptoscope.co/ssb"
+	"go.cryptoscope.co/ssb/blobstore"
 	"go.cryptoscope.co/ssb/multilogs"
 	"go.cryptoscope.co/ssb/repo"
 	mksbot "go.cryptoscope.co/ssb/sbot"
@@ -213,7 +216,6 @@ func BlobsGet(refStr string) ([]byte, error) {
 
 	buf := new(bytes.Buffer)
 	_, err = buf.ReadFrom(r)
-
 	if err != nil {
 		return nil, err
 	}
@@ -290,14 +292,66 @@ func Start(repoPath string) {
 			vars := mux.Vars(r)
 
 			blobHash := vars["blobHash"]
-			blob, err := BlobsGet(blobHash)
-
+			blobRef, err := ssb.ParseBlobRef(blobHash)
 			if err != nil {
-				BlobsWant(blobHash)
-				http.NotFound(w, r)
-			} else {
-				w.Write(blob)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				level.Error(log).Log("msg", "failed to parse url parameter", "err", err)
+				return
 			}
+
+			blobReader, err := theBot.BlobStore.Get(blobRef)
+			if err != nil {
+				if errors.Cause(err) == blobstore.ErrNoSuchBlob {
+					theBot.WantManager.Want(blobRef)
+
+					received := make(chan struct{})
+					cancel := theBot.BlobStore.Changes().Register(luigi.FuncSink(func(ctx context.Context, v interface{}, err error) error {
+						if err != nil {
+							if luigi.IsEOS(err) {
+								return nil
+							}
+							return err
+						}
+
+						n, ok := v.(ssb.BlobStoreNotification)
+						if !ok {
+							return errors.Errorf("blob change: unhandled notification type: %T", v)
+						}
+
+						if n.Op != ssb.BlobStoreOpPut {
+							return nil
+						}
+
+						if !n.Ref.Equal(blobRef) {
+							return nil // yet another blob, ignore
+						}
+						close(received)
+						return nil
+					}))
+					defer cancel()
+
+					// wait for timeout or the changes register to close the channel
+					select {
+					case <-time.After(30 * time.Second):
+						http.Error(w, "blob wait timeout", http.StatusNotFound)
+						return
+					case <-received:
+						blobReader, err = theBot.BlobStore.Get(blobRef)
+						if err != nil {
+							http.Error(w, "internal error", http.StatusInternalServerError)
+							level.Error(log).Log("msg", "get failure after received", "err", err)
+							return
+						}
+					}
+
+				} else {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					level.Error(log).Log("err", err)
+					return
+				}
+			}
+
+			io.Copy(w, blobReader)
 		})
 
 		http.Serve(lis, r)
