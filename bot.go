@@ -31,7 +31,7 @@ import (
 	"go.cryptoscope.co/ssb/repo"
 	mksbot "go.cryptoscope.co/ssb/sbot"
 
-	"github.com/pietgeursen/gobotexample/internal/multiserver"
+	"github.com/sunrise-choir/sunrise-social-gobot/internal/multiserver"
 )
 
 var (

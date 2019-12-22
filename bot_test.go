@@ -8,8 +8,8 @@ import (
 
 	"go.cryptoscope.co/margaret"
 
-	"github.com/pietgeursen/gobotexample"
 	"github.com/stretchr/testify/require"
+	gobotexample "github.com/sunrise-choir/sunrise-social-gobot"
 )
 
 func TestStartStop(t *testing.T) {
@@ -43,7 +43,7 @@ func TestPublish(t *testing.T) {
 	r.NoError(err)
 	r.EqualValues(margaret.SeqEmpty, c)
 
-	err = gobotexample.Publish(`{"type":"test", "hello":"piet"}`, nil)
+	err = gobotexample.Publish(`{"type":"test", "hello":"piet"}`)
 	r.NoError(err)
 
 	c, err = gobotexample.CurrentMessageCount()
@@ -59,7 +59,7 @@ func TestPublish(t *testing.T) {
 	r.NoError(err)
 	r.EqualValues(len(v), 1)
 
-	err = gobotexample.Publish(`{"type":"another", "hello":"piet!!!"}`, nil)
+	err = gobotexample.Publish(`{"type":"another", "hello":"piet!!!"}`)
 	r.NoError(err)
 
 	c, err = gobotexample.CurrentMessageCount()
