@@ -8,19 +8,19 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"sync"
 	"time"
-  "net/http"
 
 	"github.com/cryptix/go/logging"
+	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/luigi"
 	"go.cryptoscope.co/margaret"
 	"go.cryptoscope.co/margaret/multilog"
 	"go.cryptoscope.co/netwrap"
 	"go.cryptoscope.co/secretstream"
-  "github.com/gorilla/mux"
 
 	"go.cryptoscope.co/ssb"
 	"go.cryptoscope.co/ssb/multilogs"
@@ -220,22 +220,22 @@ func BlobsGet(refStr string) ([]byte, error) {
 	return slice, nil
 }
 
-func Peers() ([]byte, error){
+func Peers() ([]byte, error) {
 	w := &bytes.Buffer{}
-  status, err := theBot.Status()
-  if err != nil {
-    return nil, err
-  }
-  var peers = status.Peers
+	status, err := theBot.Status()
+	if err != nil {
+		return nil, err
+	}
+	var peers = status.Peers
 
-  // Apparently peers can be null and that's painful for converting to json and back
-  // If peers is null then set it to an empty list.
-  if peers == nil {
-    peers = []ssb.PeerStatus{}
-  }
-  if err := json.NewEncoder(w).Encode(peers); err != nil {
-    return nil, err
-  }
+	// Apparently peers can be null and that's painful for converting to json and back
+	// If peers is null then set it to an empty list.
+	if peers == nil {
+		peers = []ssb.PeerStatus{}
+	}
+	if err := json.NewEncoder(w).Encode(peers); err != nil {
+		return nil, err
+	}
 
 	return w.Bytes(), nil
 }
@@ -277,26 +277,26 @@ func Start(repoPath string) {
 	checkFatal(err)
 	log.Log("event", "serving", "ID", id.Ref(), "addr", listenAddr)
 
-  go func(){
-    r := mux.NewRouter()
+	go func() {
+		r := mux.NewRouter()
 
-    r.HandleFunc("/blobs/{blobHash}", func(w http.ResponseWriter, r *http.Request) {
-      vars := mux.Vars(r)
+		r.HandleFunc("/blobs/{blobHash}", func(w http.ResponseWriter, r *http.Request) {
+			vars := mux.Vars(r)
 
-      blobHash := vars["blobHash"]
-      blob, err := BlobsGet(blobHash)
+			blobHash := vars["blobHash"]
+			blob, err := BlobsGet(blobHash)
 
-      if err != nil{
-        BlobsWant(blobHash)
-        http.NotFound(w,r)
-      }else{
-        w.Write(blob)
-      }
-    })
+			if err != nil {
+				BlobsWant(blobHash)
+				http.NotFound(w, r)
+			} else {
+				w.Write(blob)
+			}
+		})
 
-    http.Handle("/", r)
-    http.ListenAndServe("0.0.0.0:8091", nil)
-  }()
+		http.Handle("/", r)
+		http.ListenAndServe("0.0.0.0:8091", nil)
+	}()
 
 	go func() {
 		for {
