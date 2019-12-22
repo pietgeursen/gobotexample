@@ -11,6 +11,7 @@ import (
 	"os"
 	"sync"
 	"time"
+  "net/http"
 
 	"github.com/cryptix/go/logging"
 	"github.com/pkg/errors"
@@ -19,6 +20,7 @@ import (
 	"go.cryptoscope.co/margaret/multilog"
 	"go.cryptoscope.co/netwrap"
 	"go.cryptoscope.co/secretstream"
+  "github.com/gorilla/mux"
 
 	"go.cryptoscope.co/ssb"
 	"go.cryptoscope.co/ssb/multilogs"
@@ -274,6 +276,27 @@ func Start(repoPath string) {
 
 	checkFatal(err)
 	log.Log("event", "serving", "ID", id.Ref(), "addr", listenAddr)
+
+  go func(){
+    r := mux.NewRouter()
+
+    r.HandleFunc("/blobs/{blobHash}", func(w http.ResponseWriter, r *http.Request) {
+      vars := mux.Vars(r)
+
+      blobHash := vars["blobHash"]
+      blob, err := BlobsGet(blobHash)
+
+      if err != nil{
+        BlobsWant(blobHash)
+        http.NotFound(w,r)
+      }else{
+        w.Write(blob)
+      }
+    })
+
+    http.Handle("/", r)
+    http.ListenAndServe("0.0.0.0:8091", nil)
+  }()
 
 	go func() {
 		for {
