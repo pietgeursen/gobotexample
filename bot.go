@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -277,6 +278,11 @@ func Start(repoPath string) {
 	checkFatal(err)
 	log.Log("event", "serving", "ID", id.Ref(), "addr", listenAddr)
 
+	// open listener first (so we can error out if the port is taken)
+	// TODO: could maybe be localhost?
+	lis, err := net.Listen("tcp", "0.0.0.0:8091")
+	checkFatal(errors.Wrap(err, "blobsServ listen failed"))
+
 	go func() {
 		r := mux.NewRouter()
 
@@ -294,8 +300,7 @@ func Start(repoPath string) {
 			}
 		})
 
-		http.Handle("/", r)
-		http.ListenAndServe("0.0.0.0:8091", nil)
+		http.Serve(lis, r)
 	}()
 
 	go func() {
