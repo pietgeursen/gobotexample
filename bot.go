@@ -8,11 +8,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/cryptix/go/logging"
+	"github.com/go-kit/kit/log/level"
+	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 	"go.cryptoscope.co/luigi"
 	"go.cryptoscope.co/margaret"
@@ -21,11 +26,12 @@ import (
 	"go.cryptoscope.co/secretstream"
 
 	"go.cryptoscope.co/ssb"
+	"go.cryptoscope.co/ssb/blobstore"
 	"go.cryptoscope.co/ssb/multilogs"
 	"go.cryptoscope.co/ssb/repo"
 	mksbot "go.cryptoscope.co/ssb/sbot"
 
-	"github.com/pietgeursen/gobotexample/internal/multiserver"
+	"github.com/sunrise-choir/sunrise-social-gobot/internal/multiserver"
 )
 
 var (
@@ -39,6 +45,8 @@ var (
 
 	runningLock sync.Mutex
 	theBot      *mksbot.Sbot
+
+	httpBlobsLisener net.Listener
 )
 
 func checkAndLog(err error) {
@@ -210,7 +218,6 @@ func BlobsGet(refStr string) ([]byte, error) {
 
 	buf := new(bytes.Buffer)
 	_, err = buf.ReadFrom(r)
-
 	if err != nil {
 		return nil, err
 	}
@@ -218,28 +225,29 @@ func BlobsGet(refStr string) ([]byte, error) {
 	return slice, nil
 }
 
-func Peers() ([]byte, error){
+func Peers() ([]byte, error) {
 	w := &bytes.Buffer{}
-  status, err := theBot.Status()
-  if err != nil {
-    return nil, err
-  }
-  var peers = status.Peers
+	status, err := theBot.Status()
+	if err != nil {
+		return nil, err
+	}
+	var peers = status.Peers
 
-  // Apparently peers can be null and that's painful for converting to json and back
-  // If peers is null then set it to an empty list.
-  if peers == nil {
-    peers = []ssb.PeerStatus{}
-  }
-  if err := json.NewEncoder(w).Encode(peers); err != nil {
-    return nil, err
-  }
+	// Apparently peers can be null and that's painful for converting to json and back
+	// If peers is null then set it to an empty list.
+	if peers == nil {
+		peers = []ssb.PeerStatus{}
+	}
+	if err := json.NewEncoder(w).Encode(peers); err != nil {
+		return nil, err
+	}
 
 	return w.Bytes(), nil
 }
 
 func Stop() error {
 	theBot.Shutdown()
+	httpBlobsLisener.Close()
 	return theBot.Close()
 }
 
@@ -274,6 +282,83 @@ func Start(repoPath string) {
 
 	checkFatal(err)
 	log.Log("event", "serving", "ID", id.Ref(), "addr", listenAddr)
+
+	// open listener first (so we can error out if the port is taken)
+	// TODO: could maybe be localhost?
+	httpBlobsLisener, err = net.Listen("tcp", "0.0.0.0:8091")
+	checkFatal(errors.Wrap(err, "blobsServ listen failed"))
+
+	go func() {
+		r := mux.NewRouter()
+
+		r.HandleFunc("/blobs/{blobHash}", func(w http.ResponseWriter, r *http.Request) {
+			vars := mux.Vars(r)
+
+			blobHash := vars["blobHash"]
+			blobRef, err := ssb.ParseBlobRef(blobHash)
+			if err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				level.Error(log).Log("msg", "failed to parse url parameter", "err", err)
+				return
+			}
+
+			blobReader, err := theBot.BlobStore.Get(blobRef)
+			if err != nil {
+				if errors.Cause(err) == blobstore.ErrNoSuchBlob {
+					theBot.WantManager.Want(blobRef)
+
+					received := make(chan struct{})
+					cancel := theBot.BlobStore.Changes().Register(luigi.FuncSink(func(ctx context.Context, v interface{}, err error) error {
+						if err != nil {
+							if luigi.IsEOS(err) {
+								return nil
+							}
+							return err
+						}
+
+						n, ok := v.(ssb.BlobStoreNotification)
+						if !ok {
+							return errors.Errorf("blob change: unhandled notification type: %T", v)
+						}
+
+						if n.Op != ssb.BlobStoreOpPut {
+							return nil
+						}
+
+						if !n.Ref.Equal(blobRef) {
+							return nil // yet another blob, ignore
+						}
+						close(received)
+						return nil
+					}))
+					defer cancel()
+
+					// wait for timeout or the changes register to close the channel
+					select {
+					case <-time.After(30 * time.Second):
+						http.Error(w, "blob wait timeout", http.StatusNotFound)
+						return
+					case <-received:
+						blobReader, err = theBot.BlobStore.Get(blobRef)
+						if err != nil {
+							http.Error(w, "internal error", http.StatusInternalServerError)
+							level.Error(log).Log("msg", "get failure after received", "err", err)
+							return
+						}
+					}
+
+				} else {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					level.Error(log).Log("err", err)
+					return
+				}
+			}
+
+			io.Copy(w, blobReader)
+		})
+
+		http.Serve(httpBlobsLisener, r)
+	}()
 
 	go func() {
 		for {

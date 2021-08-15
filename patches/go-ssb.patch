@@ -1,0 +1,51 @@
+diff --git a/vendor/go.cryptoscope.co/ssb/repo/badger_default.go b/vendor/go.cryptoscope.co/ssb/repo/badger_default.go
+index 5ffdd85..ee904a3 100644
+--- a/vendor/go.cryptoscope.co/ssb/repo/badger_default.go
++++ b/vendor/go.cryptoscope.co/ssb/repo/badger_default.go
+@@ -1,17 +1,13 @@
+ // SPDX-License-Identifier: MIT
+ 
++// +build freebsd linux windows darwin,amd64 darwin,386
++
+ package repo
+ 
+ import (
+        "github.com/dgraph-io/badger"
+-       "github.com/dgraph-io/badger/options"
+ )
+ 
+ func badgerOpts(dbPath string) badger.Options {
+-       opts := badger.DefaultOptions(dbPath)
+-
+-       // runtime throws MMIO can't allocate errors without this
+-       // => badger failed to open: Invalid ValueLogLoadingMode, must be FileIO or MemoryMap
+-       opts.ValueLogLoadingMode = options.FileIO
+-       return opts
++       return badger.DefaultOptions(dbPath)
+ }
+diff --git a/vendor/go.cryptoscope.co/ssb/sbot.go b/vendor/go.cryptoscope.co/ssb/sbot.go
+index 96af053..47e606b 100644
+--- a/vendor/go.cryptoscope.co/ssb/sbot.go
++++ b/vendor/go.cryptoscope.co/ssb/sbot.go
+@@ -39,8 +39,6 @@ type Statuser interface {
+ }
+ 
+ type PeerStatus struct {
+-  Id    string
+-  IP    string
+        Addr  string
+        Since string
+ }
+diff --git a/vendor/go.cryptoscope.co/ssb/sbot/status.go b/vendor/go.cryptoscope.co/ssb/sbot/status.go
+index cfff5bb..8e32b2e 100644
+--- a/vendor/go.cryptoscope.co/ssb/sbot/status.go
++++ b/vendor/go.cryptoscope.co/ssb/sbot/status.go
+@@ -43,8 +43,6 @@ func (sbot *Sbot) Status() (ssb.Status, error) {
+                        ms.Addr = *tcpAddr
+                }
+                s.Peers = append(s.Peers, ssb.PeerStatus{
+-      Id: es.ID.Ref(),
+-      IP: ms.Addr.String(),
+                        Addr:  ms.String(),
+                        Since: humanize.Time(time.Now().Add(-es.Since)),
+                })

@@ -2,8 +2,10 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-
 // +build arm arm64
+// +build !windows
+// +build !openbsd
+// +build !plan9
 
 package fileutil // import "modernc.org/fileutil"
 
